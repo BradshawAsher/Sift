@@ -45,3 +45,19 @@ After installing IC3PO, add `$(ic3po_path)/pysmt` to `PYTHONPATH` so that ic3po 
 
 ## Performance evaluation
 See [perf_eval](https://github.com/GLaDOS-Michigan/Sift/tree/master/perf_eval) for more details about building/running the systems.
+
+## Recommended VS Code / Editor Extension
+
+When exploring or editing `.ivy` specifications, VS Code or Cursor may default to plain text or XML. We recommend installing the **Ivy Language** extension by **panther-ivy**:
+
+* **Extension ID:** `panther-ivy.ivy-language`
+* **Features:** Full Ivy 1.7 syntax highlighting (`isolate`, `action`, `require`, `ensure`, `invariant`, etc.), LSP client integration, code folding, and bracket matching.
+* **Installation in VS Code:**
+  ```bash
+  code --install-extension panther-ivy.ivy-language
+  ```
+* **Installation in Cursor / VSCodium:**
+  Download the extension from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=panther-ivy.ivy-language) and install via:
+  ```powershell
+  code --install-extension panther-ivy.ivy-language.vsix
+  ```
