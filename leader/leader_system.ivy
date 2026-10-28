@@ -1,5 +1,15 @@
 #lang ivy1.7
 
+# ==============================================================================
+# SIFT RING LEADER ELECTION: PROTOCOL SYSTEM (leader_system.ivy)
+# ==============================================================================
+# Implements the distributed node logic for the Chang-Roberts election protocol.
+# Each node has:
+#   - A periodic timer (`timer.timeout`) that initiates candidacy by transmitting
+#     its own unique ID to its clockwise neighbor (`ring.next(self)`).
+#   - A message handler (`recv_forward`) that filters incoming candidate IDs.
+# ==============================================================================
+
 include leader_trans
 include leader_spec
 include timeout
@@ -9,17 +19,29 @@ isolate system = {
     object server(self: node) = {
         instance timer : timeout_sec
 
+        # ----------------------------------------------------------------------
+        # ACTION: timer.timeout (Initiate Election Candidacy)
+        # ----------------------------------------------------------------------
+        # When election timer fires, node injects its own identifier into the ring:
         implement timer.timeout {
             call trans.send_forward(self, ring.next(self), idn(self));
         }
 
+        # ----------------------------------------------------------------------
+        # ACTION: recv_forward (Filter or Elect Candidate)
+        # ----------------------------------------------------------------------
         implement trans.recv_forward(i: id) {
-            if i = idn(self) {  # Found a leader
+            if i = idn(self) {
+                # The node's own ID has completed a full loop around the ring!
+                # Because lower IDs are discarded at intermediate nodes, completing
+                # the circle proves this node has the strictly highest ID in the ring.
                 call spec.elect(self);
                 call trans.send_elected(self, self);
-            } else if i > idn(self) { # pass message to next node
+            } else if i > idn(self) {
+                # Incoming ID is higher than local ID: forward clockwise to neighbor:
                 call trans.send_forward(self, ring.next(self), i);
             }
+            # Note: If i < idn(self), the message is dropped (filtered out).
         }
     }
 

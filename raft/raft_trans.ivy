@@ -1,9 +1,35 @@
 #lang ivy1.7
 
+# ==============================================================================
+# SIFT RAFT: NETWORK TRANSPORT SHIM (raft_trans.ivy)
+# ==============================================================================
+# This isolate defines the network abstraction layer ("trans") connecting high-level
+# Raft protocol transitions with concrete TCP message sending and receiving.
+#
+# Architectural Role in Sift:
+#   - Encapsulates network message transmission and serialization for Raft.
+#   - Supports both normal operation (RequestVote, AppendEntries, Heartbeats)
+#     and node recovery/re-replication (`isrecover` flag).
+#   - Maintains abstract ghost relations (rqst_vote, append, etc.) to establish
+#     inductive simulation between network packets and protocol transitions.
+# ==============================================================================
+
 include common
 include tcp
 
+# ------------------------------------------------------------------------------
+# WIRE MESSAGE TYPES & PAYLOAD STRUCTURE
+# ------------------------------------------------------------------------------
+# Message kinds in Raft:
+#   rqvote:       RequestVote RPC (Candidate -> All Nodes) carrying lastLogIndex & lastLogTerm
+#   rqvotenolog:  RequestVote RPC for candidates with an empty log
+#   vtcandidate:  Vote grant response (Voter -> Candidate)
+#   appendmsg:    AppendEntries RPC (Leader -> Followers) with entry & prevLogTerm
+#   appendrep:    AppendEntries success acknowledgment (Follower -> Leader)
+#   keepalive:    Periodic empty heartbeat suppressing election timeouts
+#   nack:         Negative acknowledgment if follower rejects mismatched prevLogIndex/Term
 type msgkind = {rqvote, rqvotenolog, vtcandidate, appendmsg, appendrep, keepalive, nack}
+
 type msg =  struct {
     m_kind : msgkind,
     m_ix : index,
@@ -17,6 +43,9 @@ type msg =  struct {
 
 instance net : simple_tcp(node, msg)
 
+# ------------------------------------------------------------------------------
+# ISOLATE: trans (Network Transport Shim)
+# ------------------------------------------------------------------------------
 isolate trans = {
     relation rqst_vote(S: node, T: term, I: index, LOGT: term)
     relation rqst_vote_nolog(S: node, T: term)
@@ -24,6 +53,7 @@ isolate trans = {
     relation append(T: term, IX: index, V: value, LOGT: term, PLOGT: term)
     relation append_reply(S: node, T: term, IX: index)
 
+    # RPC send actions:
     action send_rqst_vote(src: node, t: term, ix: index, logt: term)
     action send_rqst_vote_nolog(src: node, t:term)
     action send_vote_cand(src:node, t:term, dst:node)
@@ -33,7 +63,7 @@ isolate trans = {
     action send_keepalive(src:node, t:term)
     action send_nack(src:node, leader:node, t:term, ix: index)
 
-    # Handlers
+    # Inbound message handlers:
     action handle_rqst_vote(dst:node, src: node, t: term, logt: term, ix: index)
     action handle_rqst_vote_nolog(dst:node, src: node, t:term)
     action handle_vote_cand(dst:node, t:term, src:node)
@@ -43,6 +73,9 @@ isolate trans = {
     action handle_keepalive(self:node, t:term)
     action handle_nack(self:node, n:node, t:term, ix: index)
 
+    # --------------------------------------------------------------------------
+    # TRANSPORT SPECIFICATION (Ghost relations tracking sent messages)
+    # --------------------------------------------------------------------------
     specification {
         after init  {
             rqst_vote(S, T, IX, LOGT) := false;
@@ -174,6 +207,11 @@ isolate trans = {
              call send_debug(src, m);
          }
 
+        # ----------------------------------------------------------------------
+        # NETWORK PRIMITIVE: BROADCAST
+        # ----------------------------------------------------------------------
+        # Broadcasts message `m` to all nodes in the cluster.
+        # Loop invariant guarantees that sent messages either were sent previously or equal `m`.
         action broadcast(src:node, m:msg) = {
             if m_kind(m) ~= keepalive {
                 call send_debug(src, m);
@@ -188,6 +226,10 @@ isolate trans = {
             };
         }
 
+        # ----------------------------------------------------------------------
+        # INBOUND PACKET DEMULTIPLEXER
+        # ----------------------------------------------------------------------
+        # Maps received TCP messages to high-level protocol actions.
         implement net.recv(dst:node, m:msg) {
             if m_kind(m) ~= keepalive {
                 call recv_debug(dst, m);
@@ -215,6 +257,10 @@ isolate trans = {
             };
         }
 
+        # ----------------------------------------------------------------------
+        # TRANSPORT SIMULATION INVARIANTS: WIRE -> SPECIFICATION
+        # ----------------------------------------------------------------------
+        # Every packet on the wire corresponds to an authentic protocol send action.
         invariant net.sent(M, N) & m_kind(M) = rqvote -> rqst_vote(m_node(M), m_term(M), m_ix(M), m_logt(M))
         invariant net.sent(M, N) & m_kind(M) = rqvotenolog -> rqst_vote_nolog(m_node(M), m_term(M))
         invariant net.sent(M, N) & m_kind(M) = vtcandidate -> vote_cand(m_node(M), m_term(M), N)

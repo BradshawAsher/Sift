@@ -1,5 +1,22 @@
 #lang ivy1.7
 
+# ==============================================================================
+# SIFT TWO-PHASE COMMIT: SYSTEM ISOLATE (twophase_system.ivy)
+# ==============================================================================
+# Implements the distributed Two-Phase Commit (2PC) protocol.
+#
+# Roles:
+#   - Node 0: Transaction Manager (TM coordinator).
+#   - Nodes N ~= 0: Resource Managers (RMs).
+#
+# Crucial Distributed Systems Contrast with Paxos/Raft:
+#   - 2PC requires UNANIMITY: Every single participant in `tm_allset` must vote
+#     `prepared` before the TM can issue a commit decision (`nset.allset`).
+#   - If even one RM fails or aborts, the entire transaction must abort.
+#   - In Paxos/Raft, only a MAJORITY quorum is needed, allowing progress despite
+#     node crashes.
+# ==============================================================================
+
 include twophase_trans
 include tcommit
 
@@ -7,6 +24,12 @@ isolate system = {
 
     axiom true # needed because of a bug in ivy_to_vmt
 
+    # Node lifecycle states:
+    #   ini:       Initial state for TM waiting for RM prepare votes
+    #   working:   Initial active state for RMs processing the local transaction
+    #   prepared:  RM has secured local resources and voted YES to commit
+    #   committed: Terminal decision to permanently commit transaction
+    #   aborted:   Terminal decision to roll back transaction
     object rm_state = {
         type this = {ini, working, prepared, committed, aborted}
     }
@@ -22,8 +45,8 @@ isolate system = {
         individual state: rm_state
 
         relation is_tm
-        individual tm_prepset: nset
-        individual tm_allset: nset
+        individual tm_prepset: nset  # Set of RMs that have voted PREPARED
+        individual tm_allset: nset   # Complete set of RMs participating in transaction
 
         after init {
             state := rm_state.ini if self = 0 else rm_state.working;
@@ -32,11 +55,13 @@ isolate system = {
             tm_prepset := emptynset;
         }
 
+        # ----------------------------------------------------------------------
+        # ACTION: prepare (RM Votes YES to Commit)
+        # ----------------------------------------------------------------------
+        # An RM currently working transitions to `prepared` and informs the TM:
         action prepare = {
             if ~is_tm & state = rm_state.working {
-
-                call trans.send_working(self); # so that the tm knows who is part of the decision process. used when tm commits
-
+                call trans.send_working(self); # Registers participant with the TM
                 state := rm_state.prepared;
                 call trans.send_prepared(self);
                 #call protocol.rMPrepare(self);  
@@ -44,10 +69,12 @@ isolate system = {
             } 
         }
 
+        # ----------------------------------------------------------------------
+        # ACTION: commit (TM Decides Global Commit on Unanimity)
+        # ----------------------------------------------------------------------
+        # The TM decides COMMIT if and only if EVERY participant has voted PREPARED:
         action commit = {
-            # & forall R. protocol.tm_prepared(R)
-            # & forall N. N = 0 | nset.member(N, tm_prepset)
-            # & nset.allset(tm_prepset.add(0))
+            # Unanimity check: all registered nodes (plus TM node 0) must be in prepset:
             if is_tm & state = rm_state.ini & nset.allset(tm_prepset.add(0)) { 
                 state := rm_state.committed;
                 call trans.send_committed(self);
@@ -55,6 +82,10 @@ isolate system = {
             }
         }
 
+        # ----------------------------------------------------------------------
+        # ACTION: abort (TM or RM Decides Transaction Abort)
+        # ----------------------------------------------------------------------
+        # TM aborts if an RM fails/rejects; an RM can abort unilaterally if it cannot prepare:
         action abort = {
             if is_tm & state = rm_state.ini { 
                 state := rm_state.aborted;
@@ -67,12 +98,17 @@ isolate system = {
             }
         }
 
-        implement trans.handle_working(n:node) { # keep track of all RMs that are part of the decision process. need a prepare message from all for tm to commit
+        # ----------------------------------------------------------------------
+        # MESSAGE HANDLERS: Tracking Participant Responses
+        # ----------------------------------------------------------------------
+        # TM registers participant RM in the cohort set:
+        implement trans.handle_working(n:node) {
             if is_tm & n ~= 0 {
                 tm_allset := tm_allset.add(n);
             }
         }
 
+        # TM collects prepared vote from participant RM:
         implement trans.handle_prepared(n:node) {
             if is_tm & n ~= 0 & state = rm_state.ini {
                 if ~nset.member(n, tm_allset) {
@@ -81,9 +117,9 @@ isolate system = {
                 tm_prepset := tm_prepset.add(n);
                 #call protocol.tMRcvPrepared(n);
             }
-            
         }
 
+        # RM receives global commit decision from TM (node 0):
         implement trans.handle_committed(n:node) {
             if ~is_tm & n = 0 {
                 state := rm_state.committed;
@@ -91,6 +127,7 @@ isolate system = {
             }
         }
 
+        # RM receives global abort decision from TM (node 0):
         implement trans.handle_aborted(n:node) {
             if ~is_tm & n = 0 {
                 state := rm_state.aborted;
@@ -100,6 +137,7 @@ isolate system = {
 
     }
 
+    # Simulation Refinement: Network decisions imply specification decisions
     invariant [refinement1] N ~= 0 & trans.committed(N) -> spec.committed(N)
     invariant [refinement3] N ~= 0 & trans.aborted(N) -> spec.aborted(N)
 

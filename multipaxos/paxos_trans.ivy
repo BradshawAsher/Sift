@@ -1,13 +1,35 @@
 #lang ivy1.7
 
-# This file contains the specification and implementation of the network shim is by the Multi-Paxos implementation.
-# The network shim just routes the different packet types to their designated handler.
+# ==============================================================================
+# SIFT MULTI-PAXOS: NETWORK TRANSPORT SHIM (paxos_trans.ivy)
+# ==============================================================================
+# This isolate defines the network abstraction layer ("trans") connecting high-level
+# Multi-Paxos protocol actions with concrete TCP message sending and receiving.
+#
+# Architectural Role in Sift:
+#   - Isolates consensus logic (paxos_system.ivy) from network serialization details.
+#   - Defines the wire format (struct msg) with packet types for Paxos Phase 1, 2,
+#     and decisions.
+#   - Enforces simulation: every received network message must correspond to an
+#     abstract message previously dispatched by an authenticated node.
+# ==============================================================================
 
 include tcp
 include common
 include nodes
 include votemap_segment
+
+# ------------------------------------------------------------------------------
+# WIRE MESSAGE TYPES & PAYLOAD STRUCTURE
+# ------------------------------------------------------------------------------
 object msg_kind = {
+    # Packet types:
+    #   one_a:       Phase 1a Prepare (Proposer -> All Acceptors)
+    #   one_b:       Phase 1b Promise (Acceptor -> Proposer, returns votemap_seg)
+    #   two_a:       Phase 2a Accept/Propose (Leader -> All Acceptors)
+    #   two_b:       Phase 2b Vote (Acceptor -> Leader)
+    #   decide:      Commit Announcement (Leader -> All Learners/Acceptors)
+    #   keep_alive:  Leader Heartbeat to suppress election timeouts
     type this = {one_a, one_b, two_a, two_b, keep_alive, missing_two_a, missing_decision, decide}
 }
 
@@ -24,22 +46,31 @@ object msg = {
 
 instance net : simple_tcp(node,msg)
 
+# ------------------------------------------------------------------------------
+# ISOLATE: trans (Network Transport Shim)
+# ------------------------------------------------------------------------------
 isolate trans = {
+    # Phase 1a: Prepare request for round `r` starting at instance `i`
     action send_one_a(src: node, r: round, i: inst)
     action recv_one_a(dst: node, src: node, r: round, i: inst)
     
+    # Phase 1b: Promise response carrying previous votes across segment `votes`
     action send_one_b(src: node, dst: node, r: round, votes: votemap_seg)
     action recv_one_b(dst: node, src: node, r: round, votes: votemap_seg)
 
+    # Phase 2a: Propose value `v` in slot `i` for ballot round `r`
     action send_two_a(src: node, r: round, i: inst, v: value)
     action recv_two_a(dst: node, src: node, r: round, i: inst, v: value)
 
+    # Phase 2b: Accept/Vote for value `v` in slot `i` for round `r`
     action send_two_b(src: node, dst: node, r: round, i: inst, v: value)
     action recv_two_b(dst: node, src: node, r: round, i: inst, v: value)
 
+    # Decision: Leader broadcasts learned/committed value `v` for slot `i`
     action send_decision(src: node, i: inst, v: value)
     action recv_decision(dst: node, i: inst, v: value)
 
+    # Keep-Alive: Periodic heartbeat suppressing follower election timeouts
     action send_keep_alive(src: node, r: round)
     action recv_keep_alive(dst: node, src: node, r: round)
 
@@ -47,6 +78,9 @@ isolate trans = {
 #    instance missing_decision_handler : handler(msg_kind.missing_decision)
     
 
+    # --------------------------------------------------------------------------
+    # TRANSPORT SPECIFICATION (Ghost relations tracking dispatched messages)
+    # --------------------------------------------------------------------------
     specification {
         relation one_a(S: node, R: round, I: inst)
         relation one_b(S: node, D: node, R: round, V: votemap_seg)
@@ -213,6 +247,11 @@ isolate trans = {
 #            }
         }
 
+        # ----------------------------------------------------------------------
+        # NETWORK PRIMITIVES: BROADCAST & UNICAST
+        # ----------------------------------------------------------------------
+        # bcast: Iterates through all known nodes in the cluster and sends the message
+        # over the underlying TCP transport, preserving inductive simulation.
         action bcast(src:node,m:msg) = { # broadcast sends to all nodes, including the sender.
             var iter := node.iter.create(0);
             while ~iter.is_end
@@ -232,11 +271,17 @@ isolate trans = {
             }
         }
 
+        # unicast: Point-to-point transmission to a specific target node.
         action unicast(src:node,dst:node,m:msg) = {
             call debug_sending(src,dst,m);
             call net.send(src,dst,m);
         }
 
+        # ----------------------------------------------------------------------
+        # TRANSPORT SIMULATION INVARIANTS: WIRE -> SPECIFICATION
+        # ----------------------------------------------------------------------
+        # These invariants prove that any byte packet transmitted on the wire corresponds
+        # to a legitimately dispatched protocol action in the abstract specification.
         private {
             invariant net.sent(M, D) & msg.m_kind(M) = msg_kind.one_a -> one_a(msg.m_node(M), msg.m_round(M), msg.m_inst(M))
             invariant net.sent(M, D) & msg.m_kind(M) = msg_kind.one_b -> one_b(msg.m_node(M), D, msg.m_round(M), msg.m_votemap(M))

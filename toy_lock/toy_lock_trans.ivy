@@ -1,10 +1,29 @@
 #lang ivy1.7
 
-# This file contains the specification and implementation of the network shim is by the Toy Lock implementation.
-# The network shim just routes the different packet types to their designated handler.
+# ==============================================================================
+# SIFT DISTRIBUTED TOY LOCK: NETWORK TRANSPORT SHIM (toy_lock_trans.ivy)
+# ==============================================================================
+# This isolate defines the network transport shim ("trans") for the distributed
+# ring lock ("Toy Lock").
+#
+# Protocol Overview:
+#   - Nodes form a logical ring. Exactly one node holds the lock token at a time.
+#   - When releasing the lock, the current holder increments the epoch counter
+#     and transmits a `transfer` message to its clockwise neighbor (`ring.next`).
+#   - The receiving node accepts the lock only if the message epoch is strictly
+#     higher than its own recorded epoch, ensuring mutual exclusion.
+# ==============================================================================
+
 include udp
 include common
+
+# ------------------------------------------------------------------------------
+# WIRE MESSAGE TYPES & PAYLOAD STRUCTURE
+# ------------------------------------------------------------------------------
 object msg_kind = {
+    # Packet types:
+    #   transfer: Carries the lock token and epoch to the next node on the ring
+    #   locked:   Notification logging lock acquisition
     type this = {transfer, locked}
 }
 
@@ -17,6 +36,9 @@ object msg = {
 
 instance net : udp_simple(node,msg)
 
+# ------------------------------------------------------------------------------
+# ISOLATE: trans (Network Transport Shim)
+# ------------------------------------------------------------------------------
 isolate trans = {
     action send_transfer(src: node, dst: node, e: epoch)
     action send_locked(src: node, dst: node, e: epoch)
@@ -24,6 +46,9 @@ isolate trans = {
     action handle_transfer(dst: node, e: epoch)
     action handle_locked(dst: node, e: epoch)
 
+    # --------------------------------------------------------------------------
+    # TRANSPORT SPECIFICATION (Ghost relations tracking sent lock messages)
+    # --------------------------------------------------------------------------
     specification {
         relation transfer(E:epoch, N: node)
         relation locked(E: epoch, N: node)

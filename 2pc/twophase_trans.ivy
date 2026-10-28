@@ -1,9 +1,33 @@
 #lang ivy1.7
 
+# ==============================================================================
+# SIFT TWO-PHASE COMMIT: NETWORK TRANSPORT SHIM (twophase_trans.ivy)
+# ==============================================================================
+# This isolate defines the network transport shim ("trans") for Two-Phase Commit (2PC).
+#
+# Protocol Architecture:
+#   - Node 0 is the Transaction Manager (TM coordinator).
+#   - Nodes N ~= 0 are Resource Managers (RMs).
+#   - Phases:
+#       1. Prepare Phase: RMs declare participation (`working`), evaluate local state,
+#          and vote `prepared` (or `aborted`).
+#       2. Commit/Abort Phase:
+#          - If ALL RMs vote `prepared`, TM broadcasts `committed`.
+#          - If ANY RM aborts (or coordinator times out), `aborted` is broadcast.
+# ==============================================================================
+
 include udp
 include nodes
 
+# ------------------------------------------------------------------------------
+# WIRE MESSAGE TYPES & PAYLOAD STRUCTURE
+# ------------------------------------------------------------------------------
 object msg_kind = {
+    # Packet types:
+    #   working:   RM signals participation to TM (registers in cohort)
+    #   prepared:  RM votes YES (ready to commit)
+    #   committed: TM broadcasts global COMMIT decision
+    #   aborted:   RM or TM declares transaction ABORT
     type this = {working, prepared, committed, aborted}
 }
 
@@ -16,6 +40,9 @@ object msg = {
 
 instance net : udp_simple(node, msg)
 
+# ------------------------------------------------------------------------------
+# ISOLATE: trans (Network Transport Shim)
+# ------------------------------------------------------------------------------
 isolate trans = {
 
     action send_working(n:node)
@@ -28,6 +55,9 @@ isolate trans = {
     action handle_committed(dst:node, n:node) 
     action handle_aborted(dst:node, n:node) 
 
+    # --------------------------------------------------------------------------
+    # TRANSPORT SPECIFICATION (Ghost relations tracking dispatched 2PC messages)
+    # --------------------------------------------------------------------------
     specification {
         relation working(N:node)
         relation prepared(N:node)

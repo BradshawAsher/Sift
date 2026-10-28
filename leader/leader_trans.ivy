@@ -1,11 +1,31 @@
 #lang ivy1.7
 
-# This file contains the specification and implementation of the network shim is by the Toy Lock implementation.
-# The network shim just routes the different packet types to their designated handler.
+# ==============================================================================
+# SIFT RING LEADER ELECTION: NETWORK TRANSPORT SHIM (leader_trans.ivy)
+# ==============================================================================
+# This isolate defines the network abstraction layer ("trans") for the Chang-Roberts
+# ring leader election protocol.
+#
+# Protocol Overview:
+#   - Nodes are arranged in a unidirectional logical ring (ring.next).
+#   - Each node possesses a unique identifier (id).
+#   - Nodes circulate candidate IDs clockwise:
+#       * If an incoming ID is greater than the node's own ID, it is forwarded.
+#       * If it is strictly smaller, it is dropped (swallowed).
+#       * If an ID returns to its originating node, that node knows it has the
+#         globally maximal ID and elects itself leader!
+# ==============================================================================
+
 include udp
 include common
 
+# ------------------------------------------------------------------------------
+# WIRE MESSAGE TYPES & PAYLOAD STRUCTURE
+# ------------------------------------------------------------------------------
 object msg_kind = {
+    # Packet types:
+    #   forward: Carries a candidate node ID clockwise along the ring
+    #   elected: Sent notification that leader election has succeeded
     type this = {forward, elected}
 }
 
@@ -18,14 +38,23 @@ object msg = {
 
 instance net : udp_simple(node, msg)
 
+# ------------------------------------------------------------------------------
+# ISOLATE: trans (Network Transport Shim)
+# ------------------------------------------------------------------------------
 isolate trans = {
 
+    # Sends candidate ID `i` along the ring toward node `dst`
     action send_forward(src: node, dst: node, i:id)
+    # Sends leader elected notification to `dst`
     action send_elected(src: node, dst: node)
 
+    # Inbound message receivers:
     action recv_forward(dst: node, i: id)
     action recv_elected(dst: node)
 
+    # --------------------------------------------------------------------------
+    # TRANSPORT SPECIFICATION (Ghost relations tracking dispatched ring messages)
+    # --------------------------------------------------------------------------
     specification {
         relation forward(I: id, N: node)
         relation elected(N: node)

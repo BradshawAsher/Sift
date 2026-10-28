@@ -1,5 +1,15 @@
 #lang ivy1.7
 
+# ==============================================================================
+# SIFT DISTRIBUTED TOY LOCK: SYSTEM ISOLATE (toy_lock_system.ivy)
+# ==============================================================================
+# Implements the distributed lock server on each node.
+# State per node:
+#   - ep: Current epoch number witnessed by this node.
+#   - held: Boolean flag indicating if this node currently holds the lock.
+# Initial condition: Node 0 starts with the lock (held := true) at epoch 0.
+# ==============================================================================
+
 include timeout
 include toy_lock_spec
 include toy_lock_trans
@@ -13,9 +23,14 @@ isolate system = {
 
         after init {
             ep := 0;
-            held := self = 0;
+            held := self = 0; # Node 0 holds the lock initially
         }
 
+        # ----------------------------------------------------------------------
+        # ACTION: timer.timeout (Release Lock & Pass Token Clockwise)
+        # ----------------------------------------------------------------------
+        # When a node holding the lock releases it, it relinquishes local ownership
+        # (held := false) and transmits a transfer message with epoch incremented:
         implement timer.timeout {
             if held & epoch.next(ep) > ep {
                 held := false;
@@ -23,6 +38,11 @@ isolate system = {
             }
         }
 
+        # ----------------------------------------------------------------------
+        # ACTION: trans.handle_transfer (Receive Lock Token)
+        # ----------------------------------------------------------------------
+        # A node only accepts the lock if the transfer carries an epoch strictly
+        # higher than any epoch the node has seen previously:
         implement trans.handle_transfer(e: epoch) {
             if e > ep {
                 held := true;
