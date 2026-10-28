@@ -1,8 +1,34 @@
 #lang ivy1.7
 
+# ==============================================================================
+# SIFT RAFT - LAYER 1: ASYNCHRONOUS RPC MESSAGE PASSING REFINEMENT
+# ==============================================================================
+#
+# RESEARCH & SYSTEMS CONTEXT (Ongaro & Ousterhout USENIX ATC '14):
+# ---------------------------------------------------------------
+# Layer 0 modeled Raft transitions globally.
+# Layer 1 breaks down the protocol into asynchronous network RPCs:
+#
+#   1. rqst_vote(S, T, I, LOGT): RequestVote RPC sent by candidate S.
+#   2. vote_cand(S, T, D)      : RequestVote Response (Grant Vote / votedFor).
+#   3. append(T, IX, V, ...)   : AppendEntries RPC sent by leader T.
+#   4. append_reply(S, T, IX)  : AppendEntries Response (ACK).
+#   5. committed(IX, V)        : Local commitment.
+#
+# GHOST REFINEMENT:
+# -----------------
+# Every action calls an action in `protocol0` as a ghost action.
+# Ivy proves via inductive simulation invariants that Layer 1 refines Layer 0:
+#   invariant [safety] committed(IX, V) -> protocol0.committed(IX, V)
+# ==============================================================================
+
 include raft_protocol0
 
 isolate protocol1 = {
+
+    # --------------------------------------------------------------------------
+    # NETWORK RPCS & RESPONSES
+    # --------------------------------------------------------------------------
     relation rqst_vote(S: node, T: term, I: index, LOGT: term)
     relation rqst_vote_nolog(S: node, T: term)
     relation vote_cand(S: node, T: term, D: node)
@@ -10,10 +36,12 @@ isolate protocol1 = {
     relation append_reply(S: node, T: term, IX: index)
     relation committed(IX: index, V: value)
     
+    # Node State:
     relation current_term(N: node, T: term)
     relation left_term(N: node, T: term)
     relation leader(N: node)
 
+    # Replicated Log:
     relation log_filled(N: node, IX: index)
     relation log_term(N: node, IX: index, T: term)
     function log_val(N: node, IX: index): value
@@ -34,16 +62,22 @@ isolate protocol1 = {
         log_term(N, IX, T) := false;
     }
 
+    # --------------------------------------------------------------------------
+    # ACTION: move_to_term (Term Advance Transition)
+    # --------------------------------------------------------------------------
     action move_to_term(n: node, t: term) = {
         if ~current_term(n, t) & ~left_term(n, t) {
             current_term(n, T) := T = t;
             left_term(n, T) := T < t;
             leader(n) := false;
 
-            call protocol0.move_to_term(n, t);
+            call protocol0.move_to_term(n, t); # Ghost call
         };
     }
 
+    # --------------------------------------------------------------------------
+    # ACTION: announce_candidacy (Candidate Broadcasts RequestVote RPC)
+    # --------------------------------------------------------------------------
     action announce_candidacy(n: node, t: term, logix: index, logt: term) = {
         require ~current_term(n, t) & ~left_term(n, t);
         require IX > logix -> ~log_filled(n, IX);
@@ -51,9 +85,9 @@ isolate protocol1 = {
         require log_term(n, logix, logt);
 
         rqst_vote(n, t, logix, logt) := true;
-        vote_cand(n, t, n) := true;
+        vote_cand(n, t, n) := true; # Votes for self
 
-        call protocol0.announce_candidacy(n, t, logix, logt);
+        call protocol0.announce_candidacy(n, t, logix, logt); # Ghost call
         call move_to_term(n, t);
     }
 
@@ -64,10 +98,13 @@ isolate protocol1 = {
         rqst_vote_nolog(n, t) := true;
         vote_cand(n, t, n) := true;
 
-        call protocol0.announce_candidacy_nolog(n, t);
+        call protocol0.announce_candidacy_nolog(n, t); # Ghost call
         call move_to_term(n, t);
     }
 
+    # --------------------------------------------------------------------------
+    # ACTION: recv_rqst_vote (Voter Grants Vote)
+    # --------------------------------------------------------------------------
     action recv_rqst_vote(n: node, s: node, t: term, ix: index, logt: term, logend: index, lastix: index, logendt: term) = {
         require rqst_vote(s, t, ix, logt);
         require ~current_term(n, t) & ~left_term(n, t);
@@ -75,11 +112,12 @@ isolate protocol1 = {
         require IX < logend <-> log_filled(n, IX);
         require logend > 0 -> index.succ(lastix, logend);
         require logend > 0 -> log_term(n, lastix, logendt);
+        # Raft Up-to-date check:
         require logend = 0 | (logendt < logt) | (logendt = logt & ix >= lastix);
 
         vote_cand(n, t, s) := true;
 
-        call protocol0.recv_rqst_vote(n, s, t, ix, logt);
+        call protocol0.recv_rqst_vote(n, s, t, ix, logt); # Ghost call
         call move_to_term(n, t);
     }
 
@@ -90,10 +128,13 @@ isolate protocol1 = {
         
         vote_cand(n, t, s) := true;
 
-        call protocol0.recv_rqst_vote_nolog(n, s, t);
+        call protocol0.recv_rqst_vote_nolog(n, s, t); # Ghost call
         call move_to_term(n, t);
     }
 
+    # --------------------------------------------------------------------------
+    # ACTION: recv_votes (Candidate Gathers Majority & Becomes Leader)
+    # --------------------------------------------------------------------------
     action recv_votes(n: node, t: term, q: nset) = {
         require current_term(n, t);
         require ~leader(n);
@@ -101,11 +142,13 @@ isolate protocol1 = {
         require nset.member(N, q) -> vote_cand(N, t, n);
 
         leader(n) := true;
-        call protocol0.recv_votes(n, t, q);
+        call protocol0.recv_votes(n, t, q); # Ghost call
     }
 
+    # --------------------------------------------------------------------------
+    # ACTION: append_new_entry (Leader Appends Client Command)
+    # --------------------------------------------------------------------------
     action append_new_entry(n: node, v: value, t: term, ix: index) = {
-
         require leader(n);
         require current_term(n, t);
         require log_filled(n, IX) <-> IX < ix;
@@ -114,9 +157,12 @@ isolate protocol1 = {
         log_term(n, ix, T) := t = T;
         log_val(n, ix) := v;
 
-        call protocol0.append_new_entry(n, v, t, ix);
+        call protocol0.append_new_entry(n, v, t, ix); # Ghost call
     }
 
+    # --------------------------------------------------------------------------
+    # ACTION: replicate_entry (Leader Broadcasts AppendEntries RPC)
+    # --------------------------------------------------------------------------
     action replicate_entry(n: node, t: term, ix: index, logt: term, lastix: index, lastlogt: term) = {
         require leader(n);
         require current_term(n, t);
@@ -129,9 +175,12 @@ isolate protocol1 = {
         append(t, ix, log_val(n, ix), logt, lastlogt) := true;
         append_reply(n, t, ix) := true;
 
-        call protocol0.replicate_entry(n, t, ix, logt, lastix, lastlogt);
+        call protocol0.replicate_entry(n, t, ix, logt, lastix, lastlogt); # Ghost call
     }
 
+    # --------------------------------------------------------------------------
+    # ACTION: recv_append (Follower Appends Entry)
+    # --------------------------------------------------------------------------
     action recv_append(n: node, t: term, ix: index, logv: value, logt: term, lastix: index, lastlogt: term) = {
         require append(t, ix, logv, logt, lastlogt);
         require current_term(n, t);
@@ -139,17 +188,19 @@ isolate protocol1 = {
         require ix > 0 -> index.succ(lastix, ix);
         require ix > 0 -> log_term(n, lastix, lastlogt);
         if ~log_term(n, ix, logt) {
+            log_filled(n, IX) := IX <= ix;
+            log_term(n, IX, T) := (IX < ix & log_term(n, IX, T)) | (IX = ix & T = logt);
+            log_val(n, ix) := logv;
 
-        log_filled(n, IX) := IX <= ix;
-        log_term(n, IX, T) := (IX < ix & log_term(n, IX, T)) | (IX = ix & T = logt);
-        log_val(n, ix) := logv;
+            append_reply(n, t, ix) := true;
 
-        append_reply(n, t, ix) := true;
-
-        call protocol0.recv_append(n, t, ix, logv, logt, lastix, lastlogt);
+            call protocol0.recv_append(n, t, ix, logv, logt, lastix, lastlogt); # Ghost call
         }
     }
 
+    # --------------------------------------------------------------------------
+    # ACTION: recv_append_reply (Leader Commits on Majority Quorum)
+    # --------------------------------------------------------------------------
     action recv_append_reply(n: node, t: term, ix: index, q: nset) = {
         require q.majority;
         require forall N. nset.member(N, q) -> append_reply(N, t, ix);
@@ -160,12 +211,16 @@ isolate protocol1 = {
 
         committed(IX, V) := committed(IX, V) | (IX <= ix & V = log_val(n, IX));
 
-        call protocol0.recv_append_reply(n, t, ix, q);
+        call protocol0.recv_append_reply(n, t, ix, q); # Ghost call
     }
 
+    # --------------------------------------------------------------------------
+    # INDUCTIVE SIMULATION INVARIANTS (LAYER 1 -> LAYER 0 REFINEMENT)
+    # --------------------------------------------------------------------------
     private {
         invariant [safety] committed(IX, V) -> protocol0.committed(IX, V)
 
+        # Message & State Equivalence:
         invariant rqst_vote(S, T, I, LOGT) <-> protocol0.rqst_vote(S, T, I, LOGT)
         invariant rqst_vote_nolog(S, T) <-> protocol0.rqst_vote_nolog(S, T)
         invariant vote_cand(S, T, D) <-> protocol0.vote_cand(S, T, D)
@@ -184,13 +239,5 @@ isolate protocol1 = {
         invariant log_filled(N, IX1) & IX2 < IX1 -> log_filled(N, IX2)
         invariant log_term(N, IX1, T1) & log_term(N, IX2, T2) & IX1 < IX2 -> T1 <= T2
         invariant log_term(N, IX, T1) & log_term(N, IX, T2) -> T1 = T2
-
-# invariant [ic3po_other13]       (forall T1, T2, N1, I1 . ((protocol1.log_term(N1, I1, T2) & (T1 < T2)) -> protocol1.left_term(N1, T1)))
-# invariant [ic3po_other12]       (forall I1, T2, N1, T1 . ((T2 < T1) -> (protocol0.log_term(N1, I1, T1) -> ~protocol1.current_term(N1, T2))))
-# invariant [ic3po_global2_5]     (forall I1, T1, T2, V1, T3 . ((T3 < T1) -> ~protocol1.append(T2, I1, V1, T3, T1)))
-# invariant [ic3po_global1_6]     (forall T1, T2, N1 . ((protocol1.current_term(N1, T2) & protocol1.current_term(N1, T1)) -> (T1 = T2)))
-# invariant [ic3po_other6]        (forall I1, T1, T2, V1, T3 . ((T2 < T3) -> ~protocol0.append(T2, I1, V1, T3, T1)))
-# invariant [ic3po_global1_10_1]  (forall T1, T2, N1 . (((T2 < T1) & protocol1.current_term(N1, T1)) -> protocol0.left_term(N1, T2)))
-
     }
 } with protocol0, nset, index, term

@@ -1,5 +1,29 @@
 #lang ivy1.7
 
+# ==============================================================================
+# SIFT RAFT - SYSTEM LAYER: CONCRETE NODE IMPLEMENTATION & EVENT LOOP
+# ==============================================================================
+#
+# RESEARCH & SYSTEMS CONTEXT (Ongaro & Ousterhout USENIX ATC '14):
+# ---------------------------------------------------------------
+# This is the concrete implementation layer of the Raft consensus engine.
+# It defines the executable `server(self: node)` object with real data structures:
+#
+#   1. `current_term`: The server's persistent term counter.
+#   2. `mylogs`: Concrete dynamic array (`logs`) of log entries:
+#        struct log_entry { logt: term, logv: value }
+#   3. `commit_ix`: Highest log entry known to be committed.
+#   4. `voters`: Quorum bitset tracking votes received in the current election.
+#   5. `repliers`: Replicated ACK tracker per log entry (`replierslog`).
+#   6. `leader_election`: Periodic timer object for election timeouts & heartbeats.
+#
+# C++ COMPILATION & EXTRACTION:
+# -----------------------------
+# Line 345 contains:
+#   `extract iso_impl(self: node) = system, system.server(self), ...`
+# which instructs Ivy's `ivyc` compiler to generate an executable C++ class.
+# ==============================================================================
+
 include raft_protocol1
 include raft_trans
 include timeout
@@ -17,6 +41,7 @@ isolate system = {
             committed(IX, V) := committed(IX, V) | (IX <= ix & V = server(n).mylogs.value(IX).logv);
         }
 
+        # Safety refinement: All local commits must satisfy Layer 1 safety.
         invariant [safety] committed(IX, V) -> protocol1.committed(IX, V)
     }
 
@@ -33,14 +58,17 @@ isolate system = {
             }
         }
 
-        individual current_term: term
-        individual is_leader: bool
+        # ----------------------------------------------------------------------
+        # CONCRETE NODE STATE
+        # ----------------------------------------------------------------------
+        individual current_term: term       # Current election term
+        individual is_leader: bool          # True if this node is the active cluster leader
 
-        individual mylogs: logs
-        individual commit_ix: index
+        individual mylogs: logs             # Concrete replicated log array (index -> entry)
+        individual commit_ix: index         # Highest committed log index
 
-        individual voters: nset
-        individual repliers: replierslog
+        individual voters: nset             # Votes received in current term election
+        individual repliers: replierslog    # Follower ACK sets per log entry index
 
         after init {
             current_term := 0;
@@ -51,7 +79,10 @@ isolate system = {
             repliers := replierslog.empty;
         }
 
-        # object that starts new rounds when timing out on the leader and sends heartbeat messages when self is a leader.
+        # ----------------------------------------------------------------------
+        # SUB-OBJECT: leader_election (Election Timers & Heartbeats)
+        # ----------------------------------------------------------------------
+        # Manages randomized election timeouts and leader keep-alive heartbeats.
         object leader_election = {
             individual my_time : time
             individual last_heard_from_leader : time
@@ -65,7 +96,7 @@ isolate system = {
             after init {
                 my_time := 0;
                 last_heard_from_leader := my_time;
-                timeout := 5;
+                timeout := 5; # 5-second timeout threshold
             }
 
             implement delay_leader_election {
@@ -75,24 +106,28 @@ isolate system = {
                 res := my_time - last_heard_from_leader >= timeout
             }
             
+            # Periodic timer tick:
             implement sec.timeout {
                 if ~is_leader {
                     my_time := my_time.next;
+                    # If election timeout elapsed without heartbeat, start election:
                     if is_leader_too_quiet {
                         call announce_candidacy
                     }
                 }
                 else {
+                    # Leader sends periodic empty AppendEntries (heartbeat):
                     call trans.send_keepalive(self, current_term);
                 }
             }
 
+            # Follower receives heartbeat:
             implement trans.handle_keepalive(t: term) {
                 if current_term < t {
                     call move_to_term(t);
                     call protocol1.move_to_term(self, t);
                 };
-                call delay_leader_election;
+                call delay_leader_election; # Reset election timer
             }
         }
 
@@ -104,25 +139,33 @@ isolate system = {
             call leader_election.delay_leader_election;
         }
 
+        # ----------------------------------------------------------------------
+        # ACTION: announce_candidacy (Candidate Election Initiation)
+        # ----------------------------------------------------------------------
+        # Increments term, resets election timer, votes for self, and broadcasts RequestVote.
         action announce_candidacy = {
             call move_to_term(current_term.next.add(typeconvert.from_nodeid_to_term(self)));
 
             if mylogs.end > 0 {
-                # Has some history
+                # Candidate has entries: send last log index and term:
                 var ix := mylogs.end.prev;
                 var logt := mylogs.get(ix).logt;
                 call trans.send_rqst_vote(self, current_term, ix, logt);
                 call protocol1.announce_candidacy(self, current_term, ix, logt);
             } else {
-                # Empty history
+                # Log is empty:
                 call trans.send_rqst_vote_nolog(self, current_term);
                 call protocol1.announce_candidacy_nolog(self, current_term);
             };
        
-            # VOTE FOR ITSELF AUTOMATICALLY
+            # Candidate votes for itself automatically:
             call trans.send_vote_cand(self, current_term, self);
         }
 
+        # ----------------------------------------------------------------------
+        # RPC HANDLER: handle_rqst_vote (RequestVote Handler)
+        # ----------------------------------------------------------------------
+        # Grants vote only if candidate's log is at least as up-to-date as self.
         implement trans.handle_rqst_vote(src: node, t: term, logt: term, ix: index) {
             if current_term < t {
                 if mylogs.end = 0 {
@@ -133,6 +176,7 @@ isolate system = {
                     var lastix := mylogs.end.prev;
                     var lastlogt := mylogs.get(lastix).logt;
 
+                    # Raft log up-to-date check (Section 5.4.1):
                     if (lastlogt < logt) | (lastlogt = logt & lastix <= ix) {
                         call trans.send_vote_cand(self, t, src);
                         call move_to_term(t);
@@ -151,17 +195,25 @@ isolate system = {
             };
         }
 
+        # ----------------------------------------------------------------------
+        # RPC HANDLER: handle_vote_cand (Vote Response Accumulator)
+        # ----------------------------------------------------------------------
+        # Candidate accumulates votes. If majority gathered, transitions to Leader!
         implement trans.handle_vote_cand(t:term, src:node) {
             if ~is_leader & current_term = t {
                 voters := voters.add(src);
 
                 if voters.majority {
                     is_leader := true;
-                    call protocol1.recv_votes(self, t, voters);
+                    call protocol1.recv_votes(self, t, voters); # Ghost call
                 }
             }
         }
 
+        # ----------------------------------------------------------------------
+        # API: propose (Client Write Request)
+        # ----------------------------------------------------------------------
+        # Leader appends client command to its log and initiates replication.
         implement propose(v: value) returns (ok : bool) {
             if is_leader {
                 var e: log_entry;
@@ -180,6 +232,9 @@ isolate system = {
             };
         }
 
+        # ----------------------------------------------------------------------
+        # ACTION: replicate_entry (Broadcast AppendEntries RPC)
+        # ----------------------------------------------------------------------
         action replicate_entry(ix:index, isrecover:bool, recovernode: node) = {
             require is_leader;
             require mylogs.end > ix;
@@ -197,10 +252,14 @@ isolate system = {
 
             call trans.send_append(self, current_term, ix, e.logv, e.logt, prevt, isrecover, recovernode);
             call protocol1.replicate_entry(self, current_term, ix, e.logt, previx, prevt);
-
             call trans.send_append_reply(self, self, current_term, ix, false);
         }
 
+        # ----------------------------------------------------------------------
+        # RPC HANDLER: handle_append (AppendEntries Follower Execution)
+        # ----------------------------------------------------------------------
+        # Verifies Log Matching Property (previous entry must match preix & plogt).
+        # If mismatch, sends NACK. If match, truncates conflicting tail and appends.
         implement trans.handle_append(src: node, t: term, ix: index, v: value, logt: term, plogt: term, isrecover: bool) {
             if current_term < t {
                 call move_to_term(t);
@@ -214,41 +273,52 @@ isolate system = {
                 };
                 
                 if ix >= commit_ix {
-                if ix > 0 -> (mylogs.end > preix & mylogs.value(preix).logt = plogt) {
-                    var mylogt: term;
-                    if mylogs.end > ix {
-                        mylogt := mylogs.get(ix).logt;
-                    };
-                    if mylogs.end > ix -> mylogt ~= logt {
-                        var e: log_entry;
-                        e.logt := logt;
-                        e.logv := v;
-    
-                        mylogs := mylogs.resize(ix, e);
-                        mylogs := mylogs.append(e);
+                    # Log Matching check:
+                    if ix > 0 -> (mylogs.end > preix & mylogs.value(preix).logt = plogt) {
+                        var mylogt: term;
+                        if mylogs.end > ix {
+                            mylogt := mylogs.get(ix).logt;
+                        };
+                        # If existing entry conflicts with new one, delete existing entry and all that follow:
+                        if mylogs.end > ix -> mylogt ~= logt {
+                            var e: log_entry;
+                            e.logt := logt;
+                            e.logv := v;
+        
+                            mylogs := mylogs.resize(ix, e);
+                            mylogs := mylogs.append(e);
 
-                        call trans.send_append_reply(self, src, t, ix, isrecover);
-                        call protocol1.recv_append(self, t, ix, v, logt, preix, plogt);
-                    };
-                } else {
-                    call trans.send_nack(self, src, t, ix.prev);
-                }
+                            call trans.send_append_reply(self, src, t, ix, isrecover);
+                            call protocol1.recv_append(self, t, ix, v, logt, preix, plogt);
+                        };
+                    } else {
+                        # Consistency check failed: send NACK to force leader to decrement nextIndex:
+                        call trans.send_nack(self, src, t, ix.prev);
+                    }
                 }
             };
         }
 
+        # ----------------------------------------------------------------------
+        # RPC HANDLER: handle_nack (Leader Backtracks Follower Log on Mismatch)
+        # ----------------------------------------------------------------------
         implement trans.handle_nack(n:node, t:term, ix: index) {
             if current_term = t & is_leader & mylogs.size > ix {
-                call replicate_entry(ix, true, n);
+                call replicate_entry(ix, true, n); # Resend earlier entry
             };
         }
 
+        # ----------------------------------------------------------------------
+        # RPC HANDLER: handle_append_reply (Leader Processes Follower ACK)
+        # ----------------------------------------------------------------------
+        # When a majority quorum confirms entry `ix`, leader advances `commit_ix`!
         implement trans.handle_append_reply(src: node, t:term, ix: index, isrecover: bool) {
             if current_term = t & is_leader {
                 if isrecover & mylogs.end > ix.next {
                     call replicate_entry(ix.next, isrecover, src);
                 };
 
+                # If entry is from current term and majority replicated, commit:
                 if mylogs.end > ix & mylogs.value(ix).logt = t & commit_ix <= ix {
                     if repliers.end <= ix {
                         repliers := repliers.resize(ix.next, nset.emptyset)
@@ -260,7 +330,7 @@ isolate system = {
                         commit_ix := ix.next;
                         call commit(self, ix);
 
-                        call protocol1.recv_append_reply(self, t, ix, rep);
+                        call protocol1.recv_append_reply(self, t, ix, rep); # Ghost call
                     };
                 };
             };
@@ -273,6 +343,9 @@ isolate system = {
         }
     }
 
+    # --------------------------------------------------------------------------
+    # INDUCTIVE SIMULATION INVARIANTS (SYSTEM -> LAYER 1 REFINEMENT)
+    # --------------------------------------------------------------------------
     invariant trans.rqst_vote(S, T, I, LOGT) <-> protocol1.rqst_vote(S, T, I, LOGT)
     invariant trans.rqst_vote_nolog(S, T) <-> protocol1.rqst_vote_nolog(S, T)
     invariant trans.vote_cand(S, T, D) <-> protocol1.vote_cand(S, T, D)
@@ -292,8 +365,6 @@ isolate system = {
 
     invariant server(N).commit_ix <= server(N).mylogs.end
     invariant IX < server(N).commit_ix -> committed(IX, server(N).mylogs.value(IX).logv)
-
-# invariant [ic3po_global5_9_1]   (forall I1, N1, T1 . (protocol1.log_term(N1, I1, T1) -> protocol1.log_filled(N1, I1)))
 } with nset, trans, logs, replierslog, index, term, nset, protocol1, time
 
 extract iso_impl(self: node) = system, system.server(self), index, term, nset, trans(self), net(self), node, replierslog, typeconvert, logs, time

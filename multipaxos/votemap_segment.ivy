@@ -1,5 +1,34 @@
 #lang ivy1.7
 
+# ==============================================================================
+# SIFT MULTIPAXOS: VOTEMAP SEGMENT & ZIP_MAX OPERATION
+# ==============================================================================
+#
+# RESEARCH & SYSTEMS CONTEXT (UW CSE 452 / DSLabs Reference):
+# -----------------------------------------------------------
+# In MultiPaxos, when an acceptor promises a round in Phase 1b, it must return
+# all of its previous votes across all log slots.
+#
+# A `votemap_seg` represents a contiguous slice of the vote map:
+#   - `first`: Lower bound slot index.
+#   - `upper`: Upper bound slot index.
+#   - `value(I)`: A `vote_struct` holding `(maxr: round, maxv: value)`.
+#
+# THE `zip_max` OPERATION:
+# ------------------------
+# When the leader collects Phase 1b promises from multiple nodes, it must find
+# the vote with the highest round for each slot.
+# `zip_max(m1, m2)` performs a pointwise maximum merge:
+#   for each slot i in [first, upper):
+#       if m2[i].maxr > m1[i].maxr:
+#           res[i] := m2[i]
+#       else:
+#           res[i] := m1[i]
+#
+# This is identical to the Java loop in DSLabs Paxos where the leader combines
+# 1b vote histories across a majority quorum.
+# ==============================================================================
+
 include array_segment
 include common
 
@@ -7,10 +36,6 @@ instance votemap_seg : array_segment(inst, vote_struct, votemap)
 
 isolate votemap_seg_ops = {
 
-#    function maxvote(M:votemap_seg,I:inst) : vote_struct
-
-#    definition maxvote(M,I) = votemap_seg.value(M,I) if votemap_seg.first(M) <= I & I < votemap_seg.upper(M) else not_a_vote
-    
     action zip_max(seg1:votemap_seg, seg2:votemap_seg) returns (res:votemap_seg)
 
     specification {
@@ -21,8 +46,6 @@ isolate votemap_seg_ops = {
             ...
             ensure (seg2.upper <= seg1.upper -> res.upper = seg1.upper) & (seg2.upper > seg1.upper -> res.upper = seg2.upper);
             ensure res.first = seg1.first;
-#            ensure ~(res.first <= I & I < res.upper & maxvote(seg1,I).maxr < maxvote(seg2,I).maxr & maxvote(res,I) ~= maxvote(seg2,I));
-#            ensure ~(res.first <= I & I < res.upper & maxvote(seg2,I).maxr <= maxvote(seg1,I).maxr & maxvote(res,I) ~= maxvote(seg1,I));
             ensure ~(res.first <= I & I < res.upper & (seg1.value(I) if I < seg1.upper else not_a_vote).maxr < (seg2.value(I) if I < seg2.upper else not_a_vote).maxr & res.value(I) ~= (seg2.value(I) if I < seg2.upper else not_a_vote));
             ensure ~(res.first <= I & I < res.upper & (seg1.value(I) if I < seg1.upper else not_a_vote).maxr >= (seg2.value(I) if I < seg2.upper else not_a_vote).maxr & res.value(I) ~= (seg1.value(I) if I < seg1.upper else not_a_vote));
         }

@@ -1,20 +1,60 @@
 #lang ivy1.7
 
-include paxos_spec
+# ==============================================================================
+# SIFT MULTIPAXOS - LAYER 0: ABSTRACT MULTI-INSTANCE PAXOS SPECIFICATION
+# ==============================================================================
+#
+# RESEARCH & SYSTEMS CONTEXT (UW CSE 452 / DSLabs Reference):
+# -----------------------------------------------------------
+# This file models the highest abstract layer (Layer 0) of MultiPaxos.
+# MultiPaxos generalizes Single-Instance Paxos by indexing every decision with
+# an instance identifier `I: inst` (i.e. the log slot index).
+#
+# Key Differences from Single-Instance Paxos:
+# 1. State per slot: Proposals, votes, and decisions are indexed by `(I: inst)`.
+# 2. Phase 1 amortized over all slots: A single Phase 1 exchange (Prepare/Promise)
+#    establishes leadership for ALL future log slots simultaneously.
+# 3. Hole-Filling & Recovery: When a leader takes over in `receive_join_acks`,
+#    it inspects the highest votes reported by the quorum for each slot up to `m.upper`.
+#    If a slot had a prior vote, the leader MUST adopt that value. If no node in
+#    the quorum voted in that slot, the leader proposes `no_op` to fill the hole
+#    and keep the replicated log gap-free.
+# 4. Slots beyond `m.upper` are marked `available(r, I)`: The leader can propose
+#    fresh client values for these slots on the fly (Phase 2 only).
+# ==============================================================================
 
+include paxos_spec
 include nodes
 include votemap_segment
 
 isolate protocol0 = {
 
+    # --------------------------------------------------------------------------
+    # PROTOCOL RELATIONS (GLOBAL STATE)
+    # --------------------------------------------------------------------------
+    
+    # left_round(N, R): Node N has promised a round R' > R.
+    # Therefore, N will never accept proposals or cast votes in round R or lower.
     relation left_round(N: node, R: round)
+
+    # joined_round(N, R): Node N has promised round R (Phase 1b Promise).
     relation joined_round(N: node, R: round)
 
+    # proposal(I, R, V): Value V has been proposed in slot I under round R (Phase 2a).
     relation proposal(I: inst, R: round, V: value)
+
+    # vote(N, I, R, V): Node N cast a vote for value V in slot I, round R (Phase 2b).
     relation vote(N: node, I: inst, R: round, V: value)
+
+    # decision(I, V): Value V is permanently decided/committed in slot I.
     relation decision(I: inst, V: value)
 
+    # active(R): Round R has successfully acquired leadership by collecting a
+    # majority quorum of Phase 1b promises.
     relation active(R: round)
+
+    # available(R, I): Slot I is free for the leader of round R to propose ANY
+    # new client value (i.e., no conflicting prior vote exists in the quorum).
     relation available(R: round, I: inst)
 
     specification {
@@ -28,18 +68,33 @@ isolate protocol0 = {
             available(R, I) := false;
         }
 
+        # ----------------------------------------------------------------------
+        # ACTION: join_round (Phase 1b Promise)
+        # ----------------------------------------------------------------------
+        # An acceptor N joins round R by promising not to vote in any round < R.
         action join_round(n: node, r: round) = {
             require ~left_round(n, r);
 
+            # Record that node n has left all rounds strictly less than r:
             left_round(n, R) := left_round(n, R) | R < r;
             joined_round(n, r) := true;
         }
 
+        # ----------------------------------------------------------------------
+        # ACTION: receive_join_acks (Phase 1b Quorum Collection & Hole Filling)
+        # ----------------------------------------------------------------------
+        # The leader of round R collects Phase 1b promises from a majority quorum `q`.
+        # Parameter `m` (votemap_seg) summarizes the highest votes seen across quorum `q`
+        # for each slot from `m.first` up to `m.upper`:
+        #   - If slot I has a previous vote (`maxr ~= 0`), the leader MUST adopt `maxv`.
+        #   - If slot I has no votes (`maxr = 0`), the leader proposes `no_op` to fill the hole.
+        #   - All slots `I >= m.upper` become `available` for fresh client proposals.
         action receive_join_acks(r: round, q: nset, m: votemap_seg) = {
             require m.first <= m.upper & nset.majority(q) & r ~= 0 & ~active(r);
             require forall N:node. nset.member(N, q) -> joined_round(N, r);
 
-            # m must contain, for each instance I, a value proposed at maxr(I)<r and such that no member of the quorum q voted in between maxr(I) and r. Such values are said safe.
+            # m must contain, for each instance I, a value proposed at maxr(I)<r and such that
+            # no member of the quorum q voted in between maxr(I) and r. Such values are said safe.
             require forall I: inst. m.first <= I & (m.value(I) if I < m.upper else not_a_vote).maxr ~= 0 ->
                                         proposal(I, m.value(I).maxr, m.value(I).maxv);
             if forall I: inst. m.first <= I & (m.value(I) if I < m.upper else not_a_vote).maxr = 0 ->
@@ -47,15 +102,21 @@ isolate protocol0 = {
             if forall I: inst. m.first <= I & (m.value(I) if I < m.upper else not_a_vote).maxr ~= 0 ->
                                         (forall N, R, V. ~(nset.member(N, q) & R < r & vote(N, I, R, V) & R > m.value(I).maxr)) {
 
-            # activate round:
+            # 1. Activate round: Leader can now handle proposals.
             active(r) := true;
+
+            # 2. Free slots: Slots beyond m.upper have no quorum history and can accept new proposals.
             available(r, I) := m.upper <= I;
             
-            # make proposals when a single safe value is known, and propose no-op when all values are safe (to fill holes), up to m.upper
+            # 3. Hole-Filling Proposals: Propose the adopted safe value, or no_op if no vote was cast.
             proposal(I, r, V) := (m.first <= I & I < m.upper) & ((m.value(I).maxr ~= 0 & V = m.value(I).maxv) | (m.value(I).maxr = 0 & V = no_op));
             }}
         }
         
+        # ----------------------------------------------------------------------
+        # ACTION: propose (Phase 2a Propose)
+        # ----------------------------------------------------------------------
+        # Leader proposes client value `v` in slot `i` (only allowed if slot is available).
         action propose(r:round, i:inst, v:value) = {
             require r ~= 0;
             require active(r);
@@ -65,6 +126,10 @@ isolate protocol0 = {
             proposal(i, r, v) := true;
         }
 
+        # ----------------------------------------------------------------------
+        # ACTION: cast_vote (Phase 2b Vote / Accept)
+        # ----------------------------------------------------------------------
+        # Acceptor `n` casts a vote for proposal `(i, r, v)` if it hasn't left round `r`.
         action cast_vote(n:node, i:inst, r:round, v:value) = {
             require ~left_round(n,r);
             require proposal(i, r, v);
@@ -72,6 +137,10 @@ isolate protocol0 = {
             vote(n, i, r, v) := true;
         }
 
+        # ----------------------------------------------------------------------
+        # ACTION: decide (Commit & Learn Decision)
+        # ----------------------------------------------------------------------
+        # When a majority quorum `q` votes for `(i, r, v)`, value `v` is decided.
         action decide(i:inst, r:round, v:value, q:nset) = {
             require nset.majority(q);
             require forall N. nset.member(N, q) -> vote(N, i, r, v);
@@ -80,34 +149,40 @@ isolate protocol0 = {
             decision(i, v) := true;
         }
 
-
+        # ----------------------------------------------------------------------
+        # INDUCTIVE INVARIANTS (Z3 SAFETY PROOF)
+        # ----------------------------------------------------------------------
         private {
+            # 1. Agreement: Decided values match the top-level consensus specification.
             invariant decision(I, V) <-> spec.learned(I, V)
-            # decisions come from quorums of votes:
+
+            # 2. Quorum Certificate: Every decision is backed by a majority quorum of votes.
             invariant decision(I, V) -> exists Q, R . nset.majority(Q) & forall N:node. nset.member(N, Q) -> vote(N, I, R, V)
             
-            # property of choosable and active: if either V2 is proposed in R2>R1 and V1~=V2 or I is available in R2 and V1 is not proposed in R2 at I, then V1 is not choosable in R1
+            # 3. SAFE VALUE INVARIANT (Core Paxos Safety Property):
+            # If round R2 > R1 proposes V2 ~= V1 at slot I (or slot I is available in R2),
+            # then V1 could NOT have been decided in round R1, because every majority quorum Q
+            # contains at least one node that left R1 without voting for (I, R1, V1).
             invariant nset.majority(Q) & R1 < R2 & ((proposal(I, R2, V2) & V1 ~= V2) | available(R2, I)) -> (
                 exists N:node. nset.member(N, Q) & left_round(N, R1) & ~vote(N, I, R1, V1)
             )
 
-            # propose only in active rounds
+            # 4. Active Round Properties: Proposals and availability only exist in active rounds.
             invariant proposal(I, R, V) -> active(R)
             invariant proposal(I, R, V) -> ~available(R, I)
         
-            # proposals are unique per round
+            # 5. Proposal Uniqueness: At most one value can be proposed per slot per round.
             invariant proposal(I, R, V1) & proposal(I, R, V2) -> V1 = V2
 
-            # only vote for proposed values
+            # 6. Vote Validity: Nodes only vote for values that were legitimately proposed.
             invariant vote(N, I, R, V) -> proposal(I, R, V)
 
-            # none is a reserved round
+            # 7. Reserved Round: Round 0 is reserved as an uninitialized sentinel round.
             invariant ~(proposal(I, 0, V) | vote(N, I, 0, V))
 
-            # properties of joined_round, left_round
+            # 8. Progression of Rounds: Joining round R2 implies leaving all rounds R1 < R2.
             invariant joined_round(N, R2) & R1 < R2 -> left_round(N, R1)
         }
     }
 }
 with nset.majorities_intersect, round, inst, not_a_vote_def, spec
-

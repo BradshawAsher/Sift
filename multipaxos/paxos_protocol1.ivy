@@ -1,14 +1,46 @@
 #lang ivy1.7
 
+# ==============================================================================
+# SIFT MULTIPAXOS - LAYER 1: ASYNCHRONOUS MESSAGE PASSING REFINEMENT
+# ==============================================================================
+#
+# RESEARCH & SYSTEMS CONTEXT (UW CSE 452 / DSLabs Reference):
+# -----------------------------------------------------------
+# Layer 0 modeled Paxos transitions atomically.
+# Layer 1 decomposes those atomic transitions into asynchronous network messages:
+#
+#   1. one_a(R, I)     : Phase 1a Prepare message broadcast by round R leader,
+#                        asking nodes to promise round R starting from slot I.
+#   2. one_b(S, R, V)   : Phase 1b Promise message sent by acceptor S to leader R,
+#                        carrying votemap segment V with highest accepted votes.
+#   3. two_a(I, R, V)   : Phase 2a Propose/Accept message broadcast by leader R,
+#                        proposing value V in slot I.
+#   4. two_b(S, I, R, V): Phase 2b Accepted message sent by acceptor S,
+#                        confirming vote for (I, R, V).
+#   5. decision(I, V)   : Committed decision for slot I.
+#
+# REFINEMENT THROUGH GHOST ACTIONS:
+# ---------------------------------
+# Every action in this layer calls an action in `protocol0` as a ghost action.
+# Ivy proves via simulation invariants that any execution of these message handlers
+# simulates a valid execution of Layer 0, preserving safety:
+#   invariant [safety] decision(I, V) -> protocol0.decision(I, V)
+# ==============================================================================
+
 include paxos_protocol0
 
 isolate protocol1 = {
+
+    # --------------------------------------------------------------------------
+    # DISTRIBUTED MESSAGE RELATIONS (NETWORK PACKETS)
+    # --------------------------------------------------------------------------
     relation one_a(R: round, I: inst)
     relation one_b(S: node, R: round, V: votemap_seg)
     relation two_a(I: inst, R: round, V: value)
     relation two_b(S: node, I: inst, R: round, V: value)
     relation decision(I: inst, V: value)
 
+    # Local state tracking:
     relation active(R: round)
     relation available(R: round, I: inst)
     relation left_round(N: node, R: round)
@@ -26,32 +58,62 @@ isolate protocol1 = {
             left_round(N, R) := false;
         }
 
+        # ----------------------------------------------------------------------
+        # ACTION: start_round (Phase 1a Prepare)
+        # ----------------------------------------------------------------------
+        # Leader of round R broadcasts 1a to all acceptors, starting from slot `i`.
+        # (In DSLabs: Leader initiates election by broadcasting 1a / Prepare).
         action start_round(r: round, i: inst) = {
             if forall I. ~one_a(r, I) {
                 one_a(r, i) := true;
             }
         }
 
+        # ----------------------------------------------------------------------
+        # ACTION: join_round (Internal Acceptor Round Transition)
+        # ----------------------------------------------------------------------
+        # Acceptor N promises round R and marks all earlier rounds < R as left.
         action join_round(n: node, r: round) = {
             if ~left_round(n, r) {
                 left_round(n, R) := left_round(n, R) | R < r;
-                call protocol0.join_round(n, r);
+                call protocol0.join_round(n, r); # Ghost transition in Layer 0
             }
         }
 
+        # ----------------------------------------------------------------------
+        # ACTION: receive_one_a (Phase 1b Promise Handler)
+        # ----------------------------------------------------------------------
+        # Acceptor N receives 1a(r, i). If N has not promised a higher round,
+        # it promises round r and replies with 1b carrying its votemap segment `v`:
+        #   - v.first must match i (the slot requested).
+        #   - v.value(I) must accurately report N's highest vote in each slot.
+        # (In DSLabs: PaxosServer.handle1a -> reply with 1b carrying highest votes).
         action receive_one_a(n: node, r: round, i: inst, v: votemap_seg) = {
+            # Precondition 1: Any reported vote was actually proposed:
             require forall I. v.first <= I & (v.value(I) if I < v.upper else not_a_vote).maxr ~= 0 -> two_a(I, v.value(I).maxr, v.value(I).maxv);
+            # Precondition 2: Reported max round is upper bound on N's past votes:
             require forall I, R, V. v.first <= I & two_b(n, I, R, V) -> R <= (v.value(I) if I < v.upper else not_a_vote).maxr;
             require v.first = i;
-            if ~left_round(n, r) {
-            if one_a(r, i) {
-            if forall I, R, V. v.first <= I & (v.value(I) if I < v.upper else not_a_vote).maxr = 0 -> ~two_b(n, I, R, V) {
 
-            one_b(n, r, v) := true;
-            call join_round(n, r);
-            }}}
+            if ~left_round(n, r) {
+                if one_a(r, i) {
+                    # Precondition 3: If maxr=0, N never voted in that slot:
+                    if forall I, R, V. v.first <= I & (v.value(I) if I < v.upper else not_a_vote).maxr = 0 -> ~two_b(n, I, R, V) {
+                        one_b(n, r, v) := true;          # Send 1b message
+                        call join_round(n, r);           # Advance local round
+                    }
+                }
+            }
         }
 
+        # ----------------------------------------------------------------------
+        # ACTION: receive_join_acks (Phase 1b Quorum Accumulation & Leader Activation)
+        # ----------------------------------------------------------------------
+        # Leader of round R collects a majority quorum `q` of 1b messages.
+        # It aggregates the highest votes across the quorum into summary segment `m`:
+        #   - For each slot I: if any node voted, adopt the vote from highest round.
+        #   - If no node voted, propose `no_op` to fill the hole.
+        #   - Slots above m.upper become available for new proposals.
         action receive_join_acks(r: round, q: nset, m: votemap_seg) = {
             require m.first <= m.upper & nset.majority(q);
             require r ~= 0;
@@ -66,48 +128,66 @@ isolate protocol1 = {
                 (forall N, V. nset.member(N, q) & one_b(N, r, V) -> (votemap_seg(V).value(I) if I < votemap_seg(V).upper else not_a_vote).maxr <= m.value(I).maxr);
 
             if ~active(r) {
-            active(r) := true;
-            two_a(I, r, V) := m.first <= I & I < m.upper & ((m.value(I).maxr ~= 0 & V = m.value(I).maxv) | (m.value(I).maxr = 0 & V = no_op));
-            available(r, I) := m.upper <= I;
+                active(r) := true;
+                # Propose adopted safe value, or no_op for log hole-filling:
+                two_a(I, r, V) := m.first <= I & I < m.upper & ((m.value(I).maxr ~= 0 & V = m.value(I).maxv) | (m.value(I).maxr = 0 & V = no_op));
+                available(r, I) := m.upper <= I;
 
-            call protocol0.receive_join_acks(r, q, m);
+                call protocol0.receive_join_acks(r, q, m); # Ghost transition in Layer 0
             }
         }
         
+        # ----------------------------------------------------------------------
+        # ACTION: propose (Phase 2a Propose)
+        # ----------------------------------------------------------------------
+        # Leader proposes client value `v` in available slot `i`.
+        # (In DSLabs: Leader appends client request to slot `i` and sends 2a).
         action propose(r:round, i:inst, v:value) = {
             if active(r) & available(r, i) {
+                available(r, i) := false;
+                two_a(i, r, v) := true;          # Broadcast 2a message
 
-            available(r, i) := false;
-            two_a(i, r, v) := true;
-
-            call protocol0.propose(r, i, v);
+                call protocol0.propose(r, i, v); # Ghost transition in Layer 0
             }
         }
 
+        # ----------------------------------------------------------------------
+        # ACTION: cast_vote (Phase 2b Vote / Accept)
+        # ----------------------------------------------------------------------
+        # Acceptor N receives 2a(i, r, v) and casts vote 2b if it hasn't left round r.
+        # (In DSLabs: PaxosServer.handle2a -> cast vote and reply with 2b).
         action cast_vote(n:node, i:inst, r:round, v:value) = {
             require two_a(i, r, v);
             if ~left_round(n, r) {
-            
-            call join_round(n, r);
+                call join_round(n, r);
+                two_b(n, i, r, v) := true;          # Broadcast 2b message
 
-            two_b(n, i, r, v) := true;
-
-            call protocol0.cast_vote(n, i, r, v);
+                call protocol0.cast_vote(n, i, r, v); # Ghost transition in Layer 0
             }
         }
 
+        # ----------------------------------------------------------------------
+        # ACTION: decide (Phase 2 Commit / Decision)
+        # ----------------------------------------------------------------------
+        # When a majority quorum `q` sends 2b for (i, r, v), value `v` is committed.
+        # (In DSLabs: PaxosServer.handle2b -> quorum reached -> commit to log).
         action decide(i:inst, r:round, v:value, q:nset) = {
             require nset.majority(q);
             require forall N.  nset.member(N, q) -> two_b(N, i, r, v);
 
             decision(i, v) := true;
 
-            call protocol0.decide(i, r, v, q);
+            call protocol0.decide(i, r, v, q); # Ghost transition in Layer 0
         }
         
+        # ----------------------------------------------------------------------
+        # INDUCTIVE SIMULATION INVARIANTS (LAYER 1 -> LAYER 0 REFINEMENT)
+        # ----------------------------------------------------------------------
         private {
+            # Safety Refinement: Every Layer 1 decision implies a Layer 0 decision.
             invariant [safety] decision(I, V) -> protocol0.decision(I, V)
 
+            # 1-to-1 State Simulation Equivalence:
             invariant left_round(N, R) <-> protocol0.left_round(N, R)
             invariant one_b(N, R, V) -> protocol0.joined_round(N,R)
             invariant two_a(I, R, V) <-> protocol0.proposal(I, R, V)
@@ -115,11 +195,6 @@ isolate protocol1 = {
             invariant active(R) <-> protocol0.active(R)
             invariant available(R, I) <-> protocol0.available(R, I)
             invariant ~active(0)
-
-# invariant [ic3po_other4]        (forall N1, V1, V2, I1, R1 . (((maxr(votemap_seg.value(V2, I1)) = 0) & protocol1.two_b(N1, I1, 0, V1) & protocol1.one_b(N1, R1, V2)) -> ((I1 < votemap_seg.first(V2)) | (R1 = 0))))
-# invariant [ic3po_other6]        (forall R1, R2, N1, V1, V2, I1 . (((maxr(votemap_seg.value(V2, I1)) < R2) & (R2 < R1) & protocol1.two_b(N1, I1, R2, V1) & protocol1.one_b(N1, R1, V2)) -> (I1 < votemap_seg.first(V2))))
-# invariant [ic3po_global1_5]     (forall R2, N1, R1 . ((protocol0.joined_round(N1, R1) & (R2 < R1)) -> protocol0.left_round(N1, R2)))
-# invariant [ic3po_other3]        (forall I1, R1, R2, N1, V1, V2 . ((protocol1.two_b(N1, I1, R1, V1) & protocol1.one_b(N1, R2, V2) & (R1 < R2)) -> ((I1 < votemap_seg.upper(V2)) | (I1 < votemap_seg.first(V2)))))
         }
     }
 } with round, inst, not_a_vote_def, protocol0

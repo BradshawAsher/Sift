@@ -1,31 +1,68 @@
 #lang ivy1.7
 
-include raft_spec
+# ==============================================================================
+# SIFT RAFT - LAYER 0: ABSTRACT RAFT PROTOCOL SPECIFICATION
+# ==============================================================================
+#
+# RESEARCH & SYSTEMS CONTEXT (Ongaro & Ousterhout USENIX ATC '14):
+# ---------------------------------------------------------------
+# This file models Layer 0 of the Raft consensus protocol.
+# It encodes the 5 fundamental safety properties proven in Diego Ongaro's thesis:
+#
+#   1. Election Safety: At most one leader can be elected in a given term.
+#   2. Leader Append-Only: A leader never overwrites or truncates its log entries;
+#      it only appends new entries.
+#   3. Log Matching: If two logs contain an entry with the same index and term,
+#      they agree on all entries up to that index.
+#   4. Leader Completeness: If a log entry is committed in a given term, that entry
+#      is present in the logs of the leaders for ALL higher-numbered terms.
+#   5. State Machine Safety: If a server has applied an entry at a given index,
+#      no other server will ever apply a different entry for that index.
+# ==============================================================================
 
+include raft_spec
 include nodes
 
 isolate protocol0 = {
+
+    # --------------------------------------------------------------------------
+    # PROTOCOL MESSAGES & EVENTS
+    # --------------------------------------------------------------------------
+    # RequestVote RPC sent by candidate S in term T (with last log index & term):
     relation rqst_vote(S: node, T: term, I: index, LOGT: term)
     relation rqst_vote_nolog(S: node, T: term)
+
+    # VoteGrant: Node S granted its vote to candidate D in term T (votedFor):
     relation vote_cand(S: node, T: term, D: node)
+
+    # AppendEntries RPC: Term T leader appends entry IX with value V and log term LOGT,
+    # preceded by entry at preix with term PLOGT (for Log Matching consistency check):
     relation append(T: term, IX: index, V: value, LOGT: term, PLOGT: term)
+
+    # AppendEntries Reply (ACK) sent by follower S:
     relation append_reply(S: node, T: term, IX: index)
+
+    # State Machine Commitment: Entry at IX with value V is permanently committed:
     relation committed(IX: index, V: value)
     
-    relation current_term(N: node, T: term)
-    relation left_term(N: node, T: term)
-    relation leader(N: node)
+    # Node State:
+    relation current_term(N: node, T: term) # Local term of node N
+    relation left_term(N: node, T: term)    # Terms strictly less than current_term(N)
+    relation leader(N: node)                # Whether node N is currently an active leader
 
+    # Follower Log Representation:
     relation log_filled(N: node, IX: index)
     relation log_term(N: node, IX: index, T: term)
     function log_val(N: node, IX: index): value
 
-    relation started(T: term)
-    function term_leader(T: term): node
-    relation term_filled(T: term, IX: index)
-    relation term_logt(T: term, IX: index, T: term)
-    function term_val(T: term, IX: index): value
+    # Ghost Leader History (Leader of term T):
+    relation started(T: term)               # Has a leader been elected for term T?
+    function term_leader(T: term): node     # Leader elected for term T
+    relation term_filled(T: term, IX: index)# Entry exists in term T's leader log
+    relation term_logt(T: term, IX: index, T: term) # Term of entry in term T's leader log
+    function term_val(T: term, IX: index): value    # Value of entry in term T's leader log
 
+    # Commit Tracking:
     individual commit_ix: index
     individual commit_term: term
     individual commit_quorum: nset
@@ -53,6 +90,10 @@ isolate protocol0 = {
         commit_term := 0;
     }
 
+    # --------------------------------------------------------------------------
+    # ACTION: move_to_term (Term Advance Transition)
+    # --------------------------------------------------------------------------
+    # Node advances its term to `t`, stepping down from leadership if necessary.
     action move_to_term(n: node, t: term) = {
         if ~current_term(n, t) & ~left_term(n, t) {
             current_term(n, T) := T = t;
@@ -61,6 +102,10 @@ isolate protocol0 = {
         };
     }
 
+    # --------------------------------------------------------------------------
+    # ACTION: announce_candidacy (Candidate Starts Election)
+    # --------------------------------------------------------------------------
+    # Node transitions to candidate in term `t`, votes for itself, and broadcasts RequestVote.
     action announce_candidacy(n: node, t: term, logix: index, logt: term) = {
         require ~current_term(n, t) & ~left_term(n, t);
         require IX > logix -> ~log_filled(n, IX);
@@ -70,7 +115,7 @@ isolate protocol0 = {
         call move_to_term(n, t);
 
         rqst_vote(n, t, logix, logt) := true;
-        vote_cand(n, t, n) := true;
+        vote_cand(n, t, n) := true; # Candidate votes for itself
     }
 
     action announce_candidacy_nolog(n: node, t: term) = {
@@ -82,6 +127,12 @@ isolate protocol0 = {
         vote_cand(n, t, n) := true;
     }
 
+    # --------------------------------------------------------------------------
+    # ACTION: recv_rqst_vote (Vote Grant Handler)
+    # --------------------------------------------------------------------------
+    # Node grants vote to candidate S if candidate's log is at least as up-to-date:
+    #   - Candidate's last log term > voter's last log term, OR
+    #   - Terms equal and candidate's log is at least as long (`ix >= voter.lastLogIndex`).
     action recv_rqst_vote(n: node, s: node, t: term, ix: index, logt: term) = {
         require rqst_vote(s, t, ix, logt);
         require ~current_term(n, t) & ~left_term(n, t);
@@ -101,8 +152,11 @@ isolate protocol0 = {
         vote_cand(n, t, s) := true;
     }
 
+    # --------------------------------------------------------------------------
+    # ACTION: recv_votes (Candidate Becomes Leader)
+    # --------------------------------------------------------------------------
+    # When candidate gathers votes from a majority quorum `q`, it becomes Leader!
     action recv_votes(n: node, t: term, q: nset) = {
-#    before recv_vote(n: node, t: term, q: nset) {
         require current_term(n, t);
         require ~leader(n);
         require q.majority;
@@ -117,9 +171,11 @@ isolate protocol0 = {
         term_val(t, IX) := log_val(n, IX);
     }
 
+    # --------------------------------------------------------------------------
+    # ACTION: append_new_entry (Leader Appends Client Command)
+    # --------------------------------------------------------------------------
+    # Leader appends client command to its log at next index `ix` under current term `t`.
     action append_new_entry(n: node, v: value, t: term, ix: index) = {
-
-#    before append_new_entry(n: node, v: value, t: term, ix: index) {
         require leader(n);
         require current_term(n, t);
         require log_filled(n, IX) <-> IX < ix;
@@ -133,6 +189,10 @@ isolate protocol0 = {
         term_val(t, IX) := log_val(n, IX);
     }
 
+    # --------------------------------------------------------------------------
+    # ACTION: replicate_entry (Leader Sends AppendEntries RPC)
+    # --------------------------------------------------------------------------
+    # Leader broadcasts AppendEntries with previous entry (preix, pret) for Log Matching.
     action replicate_entry(n: node, t: term, ix: index, logt: term, preix: index, pret: term) = {
         require leader(n);
         require current_term(n, t);
@@ -146,6 +206,10 @@ isolate protocol0 = {
         append_reply(n, t, ix) := true;
     }
 
+    # --------------------------------------------------------------------------
+    # ACTION: recv_append (Follower Appends Entry via Log Matching)
+    # --------------------------------------------------------------------------
+    # Follower verifies previous entry term `pret` at `preix`. If consistent, appends.
     action recv_append(n: node, t: term, ix: index, logv: value, logt: term, preix: index, pret: term) = {
         require append(t, ix, logv, logt, pret);
         require current_term(n, t);
@@ -161,6 +225,11 @@ isolate protocol0 = {
         append_reply(n, t, ix) := true;
     }
 
+    # --------------------------------------------------------------------------
+    # ACTION: recv_append_reply (Leader Commits Entry on Majority Quorum)
+    # --------------------------------------------------------------------------
+    # When a majority quorum `q` acknowledges entry `ix` from the leader's current term `t`,
+    # the entry is officially committed to the state machine!
     action recv_append_reply(n: node, t: term, ix: index, q: nset) = {
         require q.majority;
         require forall N. nset.member(N, q) -> append_reply(N, t, ix);
@@ -176,16 +245,22 @@ isolate protocol0 = {
         };
 
         committed(IX, V) := committed(IX, V) | (IX <= ix & V = log_val(n, IX));
-        call spec.commit(n, ix);
+        call spec.commit(n, ix); # Update top-level specification
     }
 
+    # --------------------------------------------------------------------------
+    # INDUCTIVE INVARIANTS: RAFT CORE SAFETY THEOREMS
+    # --------------------------------------------------------------------------
     private {
 
+    # 1. State Machine Safety: All committed entries match the external specification.
     invariant [safety] committed(IX, V) <-> spec.learned(IX, V)
 
+    # 2. Term progression:
     invariant current_term(N, T) -> (T2 < T <-> left_term(N, T2))
     invariant left_term(N, T) & T2 < T -> left_term(N, T2)
 
+    # 3. Leader Election Safety: At most one leader can be elected in a term.
     invariant current_term(N, T) & leader(N) -> term_leader(T) = N & started(T)
     invariant current_term(N, T) & term_leader(T) = N & started(T) -> leader(N)
     invariant started(T) -> current_term(term_leader(T), T) | left_term(term_leader(T), T)
@@ -194,17 +269,19 @@ isolate protocol0 = {
     invariant rqst_vote(N, T, IX, LOGT) & ~left_term(N, T) & ~started(T) -> log_term(N, IX, LOGT)
     invariant term_filled(T, IX) -> started(T)
 
-
+    # 4. Election vote uniqueness (At most one vote per node per term):
     invariant vote_cand(N, T, C1) & vote_cand(N, T, C2) -> C1 = C2
     invariant vote_cand(N, T, C)  -> current_term(N, T) | left_term(N, T)
     invariant vote_cand(N, T, C)  -> current_term(C, T) | left_term(C, T)
 
+    # 5. Log Monotonicity: Log terms are non-decreasing along the log index.
     invariant log_term(N, IX, T1) & log_term(N, IX, T2) -> T1 = T2
     invariant log_term(N, IX1, T1) & log_term(N, IX2, T2) & IX1 < IX2 -> T1 <= T2
     invariant log_term(N, IX, T1) -> log_filled(N, IX)
     invariant log_term(N, IX, T) -> current_term(N, T) | left_term(N, T)
     invariant log_filled(N, IX1) & IX2 < IX1 -> log_filled(N, IX2)
 
+    # 6. Log Matching Property: Replicas agree with leader's log history up to matched index.
     invariant log_term(N, IX, T) & IX2 <= IX -> (log_filled(N, IX2) <-> term_filled(T, IX2))
     invariant log_term(N, IX, T) & IX2 <= IX -> (log_term(N, IX2, T2) <-> term_logt(T, IX2, T2))
     invariant log_term(N, IX, T) & IX2 <= IX -> (log_val(N, IX2) = term_val(T, IX2))
@@ -218,12 +295,17 @@ isolate protocol0 = {
     invariant term_logt(T1, IX, T) & IX2 <= IX -> (term_logt(T1, IX2, T2) <-> term_logt(T, IX2, T2))
     invariant term_logt(T1, IX, T) & IX2 <= IX -> (term_val(T1, IX2) = term_val(T, IX2))
 
+    # 7. LEADER COMPLETENESS THEOREM (Core Raft Safety):
+    # If an entry is committed by a majority quorum in term T, any leader in term T2 > T
+    # is guaranteed to contain that entry.
     invariant term_logt(T, IX, T) & (exists Q. nset.majority(Q) & forall N. nset.member(N, Q) -> (append_reply(N, T, IX) | ~left_term(N, T))) & T2 > T & started(T2) -> term_logt(T2, IX, T)
     invariant term_logt(T, IX, T) & (exists Q. nset.majority(Q) & forall N. nset.member(N, Q) -> (append_reply(N, T, IX) | ~left_term(N, T))) & append_reply(NN, T, IX) ->  log_term(NN, IX, T)
     invariant term_logt(T, IX, T) & (exists Q. nset.majority(Q) & forall N. nset.member(N, Q) -> (append_reply(N, T, IX) | ~left_term(N, T))) & append_reply(NN, T, IX) & T2 > T & vote_cand(NN, T2, C) & ~left_term(C, T2) & ~started(T2) -> log_term(C, IX, T)
 
+    # 8. Quorum Certificate for Election:
     invariant started(T)-> exists Q. (nset.majority(Q) & forall NN. nset.member(NN, Q) -> vote_cand(NN, T, term_leader(T)))
 
+    # 9. AppendEntries Properties:
     invariant append(T, IX, V, LOGT, PRET) -> started(T)
     invariant append(T, IX, V, LOGT, PRET) -> term_filled(T, IX) & term_logt(T, IX, LOGT) & term_val(T, IX) = V
     invariant append(T, IX, V, LOGT, PRET) & index.succ(PIX, IX) -> term_logt(T, PIX, PRET)
@@ -235,6 +317,7 @@ isolate protocol0 = {
     invariant current_term(N, T) & leader(N) -> (log_term(N, IX, TT) <-> term_logt(T, IX, TT))
     invariant current_term(N, T) & leader(N) -> (log_val(N, IX) = term_val(T, IX))
 
+    # 10. Commitment Properties:
     invariant IX > commit_ix -> ~committed(IX, V)
     invariant commit_ix > 0 & IX <= commit_ix -> committed(IX, term_val(commit_term, IX))
     invariant committed(IX, V) & nset.member(N, commit_quorum) -> append_reply(N, commit_term, commit_ix)
