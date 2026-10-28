@@ -25,10 +25,32 @@ isolate system = {
 
     invariant [safety] trans.elected(N) -> spec.leader(N)
 
+    # --------------------------------------------------------------------------
+    # HISTORICAL IC3PO SYNTHESIZED INVARIANTS (Annotated for Reference):
+    # --------------------------------------------------------------------------
+    # Synthesized by IC3PO for the Chang-Roberts ring leader election protocol.
+
+    # [ic3po_global1_2] Circuit Completion Requirement:
+    # A node N1 is elected leader only if its own ID completed the full ring circuit
+    # and was received back at N1.
 # invariant [ic3po_global1_2]     (forall N1 . (trans.elected(N1) -> trans.forward(idn(N1), N1)))
+
+    # [ic3po_global1_1] Spec Leader Alignment:
+    # The specification leader predicate matches the network elected message.
 # invariant [ic3po_global1_1]     (forall N1 . (spec.leader(N1) -> trans.elected(N1)))
+
+    # [ic3po_other3] Global Maximality of Elected Leader:
+    # If node N2's ID completed a full circuit back to N2, every other node N1 in the
+    # entire network must have a strictly smaller ID (idn(N1) < idn(N2)).
 # invariant [ic3po_other3]        (forall N1, N2 . (trans.forward(idn(N2), N2) -> ((idn(N1) < idn(N2)) | (N2 = N1))))
+
+    # [ic3po_global3_22] Ring Segment Invariant (No Higher IDs Bypassed):
+    # If N2's message reached node N1, then for any node N3 between N2 and N1 on the ring,
+    # N3 cannot have an ID higher than N2 (otherwise N3 would have dropped N2's message).
 # invariant [ic3po_global3_22]    (forall N1, N3, N2 . (trans.forward(idn(N2), N1) -> (ring.btw(N2, N1, N3) | (idn(N3) < idn(N2)) | (N2 = N1) | (N2 = N3) | (N1 = N3))))
+
+    # [ic3po_global3_21] Monotonic Propagation Along Ring:
+    # If N2's message reached N1, it was forwarded along each intermediate node N3 on the ring.
 # invariant [ic3po_global3_21]    (forall N2, N1, N3 . (trans.forward(idn(N2), N1) -> (ring.btw(N2, N1, N3) | (N2 = N3) | trans.forward(idn(N2), N3))))
 } with ring, spec, trans, id_injective, id
 

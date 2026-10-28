@@ -117,12 +117,38 @@ isolate system = {
 # enable trans.send_reply from system.set, system.get
     invariant trans.replied(R, D) -> req.src(R) = D & req.rid(R) < server(req.src(R)).req_no
 
+    # --------------------------------------------------------------------------
+    # HISTORICAL IC3PO SYNTHESIZED INVARIANTS (Annotated for Reference):
+    # --------------------------------------------------------------------------
+    # Synthesized by IC3PO for the Sharded Hash Table (SHT / IronKV).
+
+    # [ic3po_global2_3] Delegation Map Consistency:
+    # Shard ownership is mutually exclusive: two distinct nodes cannot both believe they
+    # independently own key K1 without agreeing on delegation status.
 # invariant [ic3po_global2_3]     (forall K1, N2, N1 . ((system.server.dm.map(N1, K1, N1) & system.server.dm.map(N2, K1, N2)) -> system.server.dm.map(N1, K1, N2)))
+
+    # [ic3po_other3] Shard Value Correctness:
+    # If node N1 owns key K1, its local hash table holds the authoritative value from spec.map(K1).
 # invariant [ic3po_other3]        (forall N1, K1 . (system.server.dm.map(N1, K1, N1) -> (spec.map(K1) = system.server.hash(N1, K1))))
+
+    # [ic3po_global3_4] Request Operation Validity:
+    # Every network request is either a read or a write operation.
 # invariant [ic3po_global3_4]     (forall N1, R1 . (trans.requested(R1, N1) -> ((read = req.rtype(R1)) | (write = req.rtype(R1)) | (read = write))))
+
+    # [ic3po_global1_2] Unique Shard Delegation Destination:
+    # A shard transfer message for key K1 has a unique recipient server N1.
 # invariant [ic3po_global1_2]     (forall N2, V1, N1, K1 . ((trans.delegated(K1, V1, N2) & trans.delegated(K1, V1, N1)) -> (N2 = N1)))
+
+    # [ic3po_global1_11] Monotonic Client Request Sequence Numbering:
+    # Any processed request R1 had an ID strictly bounded by the sending client's current request counter.
 # invariant [ic3po_global1_11]    (forall R1 . (spec.requests(R1) -> (req.rid(R1) < system.server.req_no(req.src(R1)))))
+
+    # [ic3po_other1] Delegated Shard Value Authenticity:
+    # An in-flight shard delegation message for key K1 carries the genuine current value V1.
 # invariant [ic3po_other1]        (forall N1, V1, K1 . (trans.delegated(K1, V1, N1) -> (spec.map(K1) = V1)))
+
+    # [ic3po_other2] Consumed Request Linearization:
+    # Once a client request is recorded in spec.requests, the in-flight request message has been consumed.
 # invariant [ic3po_other2]        (forall N1, R1 . (spec.requests(R1) -> ~trans.requested(R1, N1)))
 } with spec, trans, key, reqnum
 

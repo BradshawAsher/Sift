@@ -36,12 +36,37 @@ isolate system = {
 
     invariant [safety] trans.locked(E, N) -> spec.lock_history(E, N)
 
+    # --------------------------------------------------------------------------
+    # HISTORICAL IC3PO SYNTHESIZED INVARIANTS (Annotated for Reference):
+    # --------------------------------------------------------------------------
+    # These invariants were synthesized by IC3PO to prove mutual exclusion on a ring.
+
+    # [ic3po_other6] Unique Transfer Destination:
+    # A lock transfer message for a specific epoch E1 can have only one recipient N1.
 # invariant [ic3po_other6]        (forall N1, E1, N2 . ((trans.transfer(E1, N1) & trans.transfer(E1, N2)) -> (N2 = N1)))
+
+    # [ic3po_other1] Transfer Provenance:
+    # If node N2 currently holds the lock at epoch ep(N2), a valid transfer message for that epoch must have existed.
 # invariant [ic3po_other1]        (forall N2, E1, N1 . ((system.server.held(N2) & trans.transfer(E1, N1)) -> trans.transfer(system.server.ep(N2), N2)))
+
+    # [ic3po_other5] Active Lock Upper Bound:
+    # While node N1 holds the lock at epoch ep(N1), any in-flight transfer message must belong to an older or current epoch (E1 <= ep(N1)).
 # invariant [ic3po_other5]        (forall E1, N2, N1 . ((system.server.held(N1) & trans.transfer(E1, N2)) -> ((E1 < system.server.ep(N1)) | (E1 = system.server.ep(N1)))))
+
+    # [ic3po_global1_5] Lock Grant Authenticity:
+    # A locked notification for epoch E1 is authentic only if a corresponding transfer occurred (or E1=0 initial).
 # invariant [ic3po_global1_5]     (forall N1, E1 . (trans.locked(E1, N1) -> (trans.transfer(E1, N1) | (0 = E1))))
+
+    # [ic3po_global1_3] Spec History Alignment:
+    # The specification lock history faithfully reflects actual locked messages from the protocol.
 # invariant [ic3po_global1_3]     (forall N1, E1 . (spec.lock_history(E1, N1) -> ((0 = E1) | trans.locked(E1, N1))))
+
+    # [ic3po_other2] Epoch Monotonicity in Transit:
+    # Multiple in-flight transfers cannot jump ahead unpredictably: any second transfer E2 cannot exceed active frontier E1.
 # invariant [ic3po_other2]        (forall E2, N2, E1, N1 . ((trans.transfer(E1, N1) & trans.transfer(E2, N2) & (system.server.ep(N1) < E1)) -> ((E2 = E1) | (E2 < E1))))
+
+    # [ic3po_other3] Mutual Exclusion:
+    # At most one node can hold the lock at any given time (held(N1) & held(N2) -> N1 = N2).
 # invariant [ic3po_other3]        (forall N1, N2 . ((system.server.held(N1) & system.server.held(N2)) -> (N2 = N1)))
 } with spec, epoch, trans
 

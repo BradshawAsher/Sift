@@ -280,13 +280,29 @@ isolate protocol3 = {
             # These invariants were synthesized by the IC3PO PDR/IC3 model checker.
             # While redundant when using the manual refinement layer invariants above,
             # they are preserved for reference and when executing ivy_to_vmt.py.
+
+            # [ic3po_global3_13] Promise round progression: If node N1 sent a 1b promise for round R1, current_round(N1) >= R1.
 # invariant [ic3po_global3_13]    (forall N1, V1, R1, N2 . (protocol2.one_b(N1, N2, R1, V1) -> ((protocol3.current_round(N1) = R1) | (R1 < protocol3.current_round(N1)))))
+
+            # [ic3po_global3_10] 1b response precondition: If N2 promised round R1 to N1, N1 must have broadcast 1a for R1 (or N1=N2 self-promise).
 # invariant [ic3po_global3_10]    (forall N1, R1, V1, N2 . (protocol2.one_b(N2, N1, R1, V1) -> (protocol3.one_a(N1, R1, votemap_seg.first(V1)) | (N1 = N2))))
+
+            # [ic3po_other1] Active leadership requirement: Proposing 2a in current_round requires round_active to be true.
 # invariant [ic3po_other1]        (forall V1, I1, N1 . ((protocol3.two_a(I1, protocol3.current_round(N1), V1) & leader_of(N1, protocol3.current_round(N1))) -> protocol3.round_active(N1)))
+
+            # [ic3po_global7_7] Vote round consistency: Acceptor N1 cannot have voted in round R1 if current_round(N1) < R1.
 # invariant [ic3po_global7_7]     (forall N1, I1, R1, V1 . ((protocol3.current_round(N1) < R1) -> ~protocol3.two_b(N1, I1, R1, V1)))
+
+            # [ic3po_global3_11] 1a broadcast consistency: A node cannot have broadcast 1a for round R1 if current_round(N1) < R1.
 # invariant [ic3po_global3_11]    (forall N1, R1, I1 . (protocol3.one_a(N1, R1, I1) -> ((R1 < protocol3.current_round(N1)) | (R1 = protocol3.current_round(N1)))))
+
+            # [ic3po_global2_3] Legitimate leader election: Only the designated leader of round R1 can broadcast Phase 1a.
 # invariant [ic3po_global2_3]     (forall R1, I1, N1 . (protocol2.one_a(N1, R1, I1) -> leader_of(N1, R1)))
+
+            # [ic3po_other2] Joined votes lower bound: The first slot index in joined_votes matches the initial slot I1 in 1a.
 # invariant [ic3po_other2]        (forall I1, N1 . (protocol3.one_a(N1, protocol3.current_round(N1), I1) -> (votemap_seg.first(protocol3.joined_votes(N1)) = I1)))
+
+            # [ic3po_global6_10] Proposal round consistency: Leader N1 cannot propose 2a in round R1 if current_round(N1) < R1.
 # invariant [ic3po_global6_10]    (forall N1, I1, V1, R1 . (leader_of(N1, R1) -> ((protocol3.current_round(N1) < R1) -> ~protocol2.two_a(I1, R1, V1))))
         }
     }

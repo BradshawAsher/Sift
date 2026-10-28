@@ -366,7 +366,10 @@ isolate system = {
     invariant server(N).commit_ix <= server(N).mylogs.end
     invariant IX < server(N).commit_ix -> committed(IX, server(N).mylogs.value(IX).logv)
 
-    # Historical IC3PO synthesized invariant (preserved for tooling):
+    # Historical IC3PO synthesized invariant (annotated for reference):
+    # [ic3po_global5_9_1] Log Slot Domain Validity:
+    # If a node N1 associates term T1 with log index I1, that log slot is guaranteed
+    # to be filled (log_filled(N1, I1)). Terms cannot be recorded for non-existent log entries.
 # invariant [ic3po_global5_9_1]   (forall I1, N1, T1 . (protocol1.log_term(N1, I1, T1) -> protocol1.log_filled(N1, I1)))
 } with nset, trans, logs, replierslog, index, term, nset, protocol1, time
 

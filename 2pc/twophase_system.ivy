@@ -103,15 +103,49 @@ isolate system = {
     invariant [refinement1] N ~= 0 & trans.committed(N) -> spec.committed(N)
     invariant [refinement3] N ~= 0 & trans.aborted(N) -> spec.aborted(N)
 
+    # --------------------------------------------------------------------------
+    # HISTORICAL IC3PO SYNTHESIZED INVARIANTS (Annotated for Reference):
+    # --------------------------------------------------------------------------
+    # Synthesized by IC3PO for Two-Phase Commit (2PC).
+
+    # [ic3po_global1_2] Designated Transaction Manager:
+    # Node 0 is statically designated as the central Transaction Manager (TM).
 # invariant [ic3po_global1_2]     system.server.is_tm(0)
+
+    # [ic3po_other3] Registered Participant Activity:
+    # Every node N2 tracked in the TM's active cohort (tm_allset) participated by sending a working message.
 # invariant [ic3po_other3]        (forall N2, N1 . (nset.member(N2, system.server.tm_allset(N1)) -> trans.working(N2)))
+
+    # [ic3po_other9] Complete Cohort Membership on Commit:
+    # A commit message broadcast requires all participating nodes to be members of the TM's tracked cohort.
 # invariant [ic3po_other9]        (forall N2, N1 . (trans.committed(N2) -> (nset.member(N1, system.server.tm_allset(N2)) | (N2 = N1))))
+
+    # [ic3po_global5_12_1] Prepared State Precondition:
+    # An RM cannot vote "prepared" without having first been active ("working") on the transaction.
 # invariant [ic3po_global5_12_1]  (forall N1 . (trans.prepared(N1) -> trans.working(N1)))
+
+    # [ic3po_global6_13] Prepared Subset Property:
+    # The set of nodes that voted "prepared" (tm_prepset) is always a subset of all cohort participants (tm_allset).
 # invariant [ic3po_global6_13]    (forall N1, N2 . (nset.member(N1, system.server.tm_prepset(N2)) -> nset.member(N1, system.server.tm_allset(N2))))
+
+    # [ic3po_global1_5] Working State Excludes Abort:
+    # An RM currently in the working state has not aborted.
 # invariant [ic3po_global1_5]     (forall N1 . ((system.server.state(N1) = system.rm_state.working) -> ~trans.aborted(N1)))
+
+    # [ic3po_global1_1] TM Uniqueness:
+    # Only node 0 can be the Transaction Manager.
 # invariant [ic3po_global1_1]     (forall N1 . (system.server.is_tm(N1) -> (0 = N1)))
+
+    # [ic3po_global5_7] TM Commit Authority:
+    # An individual RM can only commit if the TM (node 0) has decided and broadcast the global commit.
 # invariant [ic3po_global5_7]     (forall N1 . (spec.committed(N1) -> trans.committed(0)))
+
+    # [ic3po_global5_15] Local vs Network State Consistency:
+    # Once a node transitions into local working state, its initial join message has been consumed.
 # invariant [ic3po_global5_15]    (forall N1 . ((system.server.state(N1) = system.rm_state.working) -> ~trans.working(N1)))
+
+    # [ic3po_global1_9] Exhaustive Participant State Partition:
+    # Every cohort member RM is in exactly one of the 2PC lifecycle states: working, prepared, committed, or aborted.
 # invariant [ic3po_global1_9]     (forall N2, N1 . (system.server.is_tm(N2) -> (spec.committed(N1) | spec.prepared(N1) | spec.aborted(N1) | spec.working(N1) | (N2 = N1))))
 } with spec, nset, trans
 

@@ -203,9 +203,20 @@ isolate protocol1 = {
             # (via `run.sh` and `ivy_to_vmt.py`). The original authors left them
             # commented out because Z3 proves Layer 1 in isolation without them,
             # but they serve as ground truth for re-running the IC3PO engine.
+
+            # [ic3po_other4] Sentinel/Zero-round consistency: If reported maxr for slot I1 is 0,
+            # and N1 cast a vote at round 0 in slot I1, then slot I1 is outside the segment (I1 < V2.first).
 # invariant [ic3po_other4]        (forall N1, V1, V2, I1, R1 . (((maxr(votemap_seg.value(V2, I1)) = 0) & protocol1.two_b(N1, I1, 0, V1) & protocol1.one_b(N1, R1, V2)) -> ((I1 < votemap_seg.first(V2)) | (R1 = 0))))
+
+            # [ic3po_other6] Lower-bound truncation soundness: If N1 voted in round R2 < R1,
+            # but 1b promise for R1 reports maxr < R2, then slot I1 must precede the segment start (I1 < V2.first).
 # invariant [ic3po_other6]        (forall R1, R2, N1, V1, V2, I1 . (((maxr(votemap_seg.value(V2, I1)) < R2) & (R2 < R1) & protocol1.two_b(N1, I1, R2, V1) & protocol1.one_b(N1, R1, V2)) -> (I1 < votemap_seg.first(V2))))
+
+            # [ic3po_global1_5] Round progression: If node N1 joined round R1, it has left all earlier rounds R2 < R1.
 # invariant [ic3po_global1_5]     (forall R2, N1, R1 . ((protocol0.joined_round(N1, R1) & (R2 < R1)) -> protocol0.left_round(N1, R2)))
+
+            # [ic3po_other3] Segment boundary validity: Any past vote cast in R1 < R2 by a node promising R2
+            # must either fall strictly within the segment [first, upper) or lie outside it.
 # invariant [ic3po_other3]        (forall I1, R1, R2, N1, V1, V2 . ((protocol1.two_b(N1, I1, R1, V1) & protocol1.one_b(N1, R2, V2) & (R1 < R2)) -> ((I1 < votemap_seg.upper(V2)) | (I1 < votemap_seg.first(V2)))))
         }
     }

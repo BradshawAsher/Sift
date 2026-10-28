@@ -50,9 +50,23 @@ isolate spec = {
 
 	invariant [safety] (forall R1, R2. ~(aborted(R1) & committed(R2)) )
 
+	# --------------------------------------------------------------------------
+	# HISTORICAL IC3PO SYNTHESIZED INVARIANTS (Annotated for Reference):
+	# --------------------------------------------------------------------------
+	# [ic3po_prop1] Fundamental 2PC Safety / Mutual Exclusion:
+	# If any Resource Manager N1 has aborted, no Resource Manager N2 can ever commit.
 	invariant [ic3po_prop1]	(forall N2, N1 . (spec.aborted(N1) -> ~spec.committed(N2)))
+
+	# [ic3po_prop2] Terminal Abort State:
+	# An RM that has aborted is never in the prepared state.
 	invariant [ic3po_prop2]	(forall N0 . (spec.aborted(N0) -> ~spec.prepared(N0)))
+
+	# [ic3po_global3] TM Spec Isolation (Commit):
+	# Node 0 is the Transaction Manager coordinator, not an RM, so it never commits as a participant.
 	invariant [ic3po_global3]	~spec.committed(0)
+
+	# [ic3po_global3_1] TM Spec Isolation (Abort):
+	# Node 0 is the Transaction Manager coordinator, so it never records a participant abort.
 	invariant [ic3po_global3_1]	~spec.aborted(0)
 
 } with node

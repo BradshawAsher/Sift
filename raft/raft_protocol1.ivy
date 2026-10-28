@@ -241,17 +241,43 @@ isolate protocol1 = {
         invariant log_term(N, IX, T1) & log_term(N, IX, T2) -> T1 = T2
 
         # ----------------------------------------------------------------------
-        # HISTORICAL IC3PO SYNTHESIZED INVARIANTS (Preserved for Tooling):
+        # HISTORICAL IC3PO SYNTHESIZED INVARIANTS (Annotated for Reference):
         # ----------------------------------------------------------------------
         # These invariants were synthesized by the IC3PO PDR/IC3 model checker.
-        # They were commented out in the Sift paper evaluation because Layer 1
-        # simulation establishes them directly, but they are preserved here for
-        # reference and IC3PO tooling.
+        # In Sift's layered proof, Layer 1 simulation establishes them directly,
+        # but they are preserved here for reference and IC3PO tooling.
+        # Explanations below unpack the raw formulas into standard Raft systems intuition.
+
+        # [ic3po_other13] Monotonic Term Progression / Historical Log Validity:
+        # If node N1 possesses a log entry at index I1 stamped with term T2, it has
+        # already abandoned (left) all prior terms T1 < T2. Nodes advance terms monotonically
+        # and never revert to past terms after writing entries from later terms.
 # invariant [ic3po_other13]       (forall T1, T2, N1, I1 . ((protocol1.log_term(N1, I1, T2) & (T1 < T2)) -> protocol1.left_term(N1, T1)))
+
+        # [ic3po_other12] Current Term Lower Bound:
+        # A node N1 containing a log entry created in term T1 cannot currently reside in an
+        # earlier term T2 < T1. A node's current term is always >= any term present in its log.
 # invariant [ic3po_other12]       (forall I1, T2, N1, T1 . ((T2 < T1) -> (protocol0.log_term(N1, I1, T1) -> ~protocol1.current_term(N1, T2))))
+
+        # [ic3po_global2_5] AppendEntries Entry-Term Monotonicity:
+        # In an AppendEntries message (leader term T2, index I1, value V1, prevLogTerm T3, entryTerm T1),
+        # the preceding entry term T3 cannot exceed the new entry's term T1 (~(T3 > T1) => T3 <= T1).
+        # Raft log entries never decrease in term number as slot index increases.
 # invariant [ic3po_global2_5]     (forall I1, T1, T2, V1, T3 . ((T3 < T1) -> ~protocol1.append(T2, I1, V1, T3, T1)))
+
+        # [ic3po_global1_6] Uniqueness of Current Term:
+        # A node N1 can only be in at most one current term at any given moment (functional state).
 # invariant [ic3po_global1_6]     (forall T1, T2, N1 . ((protocol1.current_term(N1, T2) & protocol1.current_term(N1, T1)) -> (T1 = T2)))
+
+        # [ic3po_other6] AppendEntries Leader Term Bound:
+        # A leader in term T2 cannot dispatch an AppendEntries message carrying a prevLogTerm T3
+        # that exceeds its own term T2 (~(T2 < T3) => T3 <= T2). All log entries replicated by a leader
+        # were generated in terms less than or equal to the leader's active term.
 # invariant [ic3po_other6]        (forall I1, T1, T2, V1, T3 . ((T2 < T3) -> ~protocol0.append(T2, I1, V1, T3, T1)))
+
+        # [ic3po_global1_10_1] Strict Term Advancement / Irreversibility:
+        # If node N1 is currently in term T1, it has definitively left (left_term) all preceding terms T2 < T1.
+        # Nodes never re-enter or receive messages from stale terms they have already passed.
 # invariant [ic3po_global1_10_1]  (forall T1, T2, N1 . (((T2 < T1) & protocol1.current_term(N1, T1)) -> protocol0.left_term(N1, T2)))
     }
 } with protocol0, nset, index, term
