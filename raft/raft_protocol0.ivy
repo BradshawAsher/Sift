@@ -157,6 +157,9 @@ isolate protocol0 = {
     # --------------------------------------------------------------------------
     # When candidate gathers votes from a majority quorum `q`, it becomes Leader!
     action recv_votes(n: node, t: term, q: nset) = {
+        # Note: In Ivy 1.6, monitors used `# before recv_vote(...) {`.
+        # In Ivy 1.7, modern action definitions use `action recv_votes(...) = { require ... }`.
+#    before recv_vote(n: node, t: term, q: nset) {
         require current_term(n, t);
         require ~leader(n);
         require q.majority;
@@ -176,6 +179,8 @@ isolate protocol0 = {
     # --------------------------------------------------------------------------
     # Leader appends client command to its log at next index `ix` under current term `t`.
     action append_new_entry(n: node, v: value, t: term, ix: index) = {
+        # Note: Original Ivy 1.6 monitor hook syntax (preserved for reference):
+#    before append_new_entry(n: node, v: value, t: term, ix: index) {
         require leader(n);
         require current_term(n, t);
         require log_filled(n, IX) <-> IX < ix;

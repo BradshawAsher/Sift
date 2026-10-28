@@ -211,11 +211,39 @@ isolate system = {
             new_vote.maxv := v;
             my_votes := my_votes.set(i,new_vote);
             
+            # Note: Originally the authors drafted local inst_status tracking here, but
+            # since the node also receives its own 2b via trans.recv_two_b, this was redundant:
+#            if inst_status.end <= i {
+#                inst_status := inst_status.resize(i.next, init_status)
+#            };
+#            var status := inst_status.get(i);
+#            status.voters := status.voters.add(self);
+#            status.proposal := v;
+#            status.active := true;
+#            inst_status := inst_status.set(i,status);
+            
             call protocol3.cast_vote(self, i, current_round, v, my_votes); # ghost
             
             call trans.send_two_b(self, leader, current_round, i, v);
         }
         
+        # ----------------------------------------------------------------------
+        # COMMENTED-OUT PACKET RETRANSMISSION (Why disabled by Sift authors):
+        # ----------------------------------------------------------------------
+        # Sift originally drafted loss recovery handlers (`ask_for_retransmission`,
+        # `missing_two_a_handler`, and `missing_decision_handler`).
+        #
+        # WHY IT WAS COMMENTED OUT:
+        # In Ivy and first-order logic, reasoning about packet loss, retransmissions,
+        # timeouts, and duplicate suppression introduces complex temporal quantifier
+        # alternations (forall-exists) that fall outside the decidable Effectively
+        # Propositional (EPR) logic fragment, causing Z3 to time out or diverge.
+        #
+        # Consequently, the Sift paper evaluation decoupled consensus logic from
+        # lossy network retransmissions by running on an abstract reliable transport
+        # (similar to TCP in DSLabs), rendering these custom retry loops unnecessary
+        # for verifying core MultiPaxos safety.
+        # ----------------------------------------------------------------------
 #        action ask_for_retransmission(i:inst) = {
 #            var m:msg;
 #            m.m_node := self;

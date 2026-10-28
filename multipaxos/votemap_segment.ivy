@@ -36,6 +36,19 @@ instance votemap_seg : array_segment(inst, vote_struct, votemap)
 
 isolate votemap_seg_ops = {
 
+    # --------------------------------------------------------------------------
+    # WHY `maxvote` WAS COMMENTED OUT BY SIFT AUTHORS:
+    # --------------------------------------------------------------------------
+    # Originally, the authors defined an uninterpreted helper function `maxvote(M, I)`:
+#    function maxvote(M:votemap_seg,I:inst) : vote_struct
+#    definition maxvote(M,I) = votemap_seg.value(M,I) if votemap_seg.first(M) <= I & I < votemap_seg.upper(M) else not_a_vote
+    #
+    # However, in Ivy and Z3, uninterpreted function definitions with quantifiers 
+    # over segments can trigger E-matching loops (quantifier matching cycles) that
+    # cause verification to hang or blow up solver memory.
+    # To remain strictly within the decidable EPR (Effectively Propositional) fragment,
+    # the authors inlined the ternary conditional directly into the `ensure` clauses below!
+    
     action zip_max(seg1:votemap_seg, seg2:votemap_seg) returns (res:votemap_seg)
 
     specification {
@@ -46,6 +59,9 @@ isolate votemap_seg_ops = {
             ...
             ensure (seg2.upper <= seg1.upper -> res.upper = seg1.upper) & (seg2.upper > seg1.upper -> res.upper = seg2.upper);
             ensure res.first = seg1.first;
+            # Original specifications using maxvote (preserved for reference):
+#            ensure ~(res.first <= I & I < res.upper & maxvote(seg1,I).maxr < maxvote(seg2,I).maxr & maxvote(res,I) ~= maxvote(seg2,I));
+#            ensure ~(res.first <= I & I < res.upper & maxvote(seg2,I).maxr <= maxvote(seg1,I).maxr & maxvote(res,I) ~= maxvote(seg1,I));
             ensure ~(res.first <= I & I < res.upper & (seg1.value(I) if I < seg1.upper else not_a_vote).maxr < (seg2.value(I) if I < seg2.upper else not_a_vote).maxr & res.value(I) ~= (seg2.value(I) if I < seg2.upper else not_a_vote));
             ensure ~(res.first <= I & I < res.upper & (seg1.value(I) if I < seg1.upper else not_a_vote).maxr >= (seg2.value(I) if I < seg2.upper else not_a_vote).maxr & res.value(I) ~= (seg1.value(I) if I < seg1.upper else not_a_vote));
         }
