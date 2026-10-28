@@ -75,10 +75,14 @@ isolate trans = {
         }
     }
 
+    # --------------------------------------------------------------------------
+    # TRANSPORT IMPLEMENTATION (UDP Wire Transport & Demuxing)
+    # --------------------------------------------------------------------------
     implementation {
         action debug_sending(src:node,dst:node,m:msg)
         action debug_receiving(dst:node,m:msg)
 
+        # Inbound packet demultiplexer:
         implement net.recv(dst:node, m:msg) {
             call debug_receiving(dst,m);
             if m.m_kind = msg_kind.transfer {
@@ -89,6 +93,7 @@ isolate trans = {
             }
         }
 
+        # Transmits lock transfer token with epoch `e` to neighbor `dst`:
         implement send_transfer {
             var m: msg;
             m.m_kind := msg_kind.transfer;
@@ -97,6 +102,7 @@ isolate trans = {
             call net.send(src, dst, m);
         }
 
+        # Transmits lock acquisition notification:
         implement send_locked {
             var m: msg;
             m.m_kind := msg_kind.locked;
@@ -105,6 +111,7 @@ isolate trans = {
             call net.send(src, dst, m);
         }
 
+        # Inductive simulation invariants: wire messages imply specification relations
         private {
             invariant net.spec.sent(M, D) & msg.m_kind(M) = msg_kind.transfer -> transfer(msg.m_epoch(M), D)
             invariant net.spec.sent(M, D) & msg.m_kind(M) = msg_kind.locked -> locked(msg.m_epoch(M), D)
