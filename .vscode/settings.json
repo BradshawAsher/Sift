@@ -1,0 +1,13 @@
+{
+  "files.associations": {
+    "*.ivy": "ivy"
+  },
+  "ivy.lsp.includePaths": [
+    "multipaxos",
+    "raft",
+    "2pc",
+    "leader",
+    "sht",
+    "toy_lock"
+  ]
+}
